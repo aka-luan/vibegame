@@ -10,6 +10,7 @@ import {
   CLIENT_MESSAGES,
   ROOM_NAMES,
   SERVER_MESSAGES,
+  type AuthoritativeMovementSnapshot,
 } from "../packages/protocol/src/index.js";
 
 let runningServer: RunningFoundationServer | undefined;
@@ -21,7 +22,10 @@ afterEach(async () => {
   runningServer = undefined;
 });
 
-async function startDevelopmentServer(options?: { now?: () => number }) {
+async function startDevelopmentServer(options?: {
+  now?: () => number;
+  reconnectGraceSeconds?: number;
+}) {
   runningServer = await startFoundationServer({
     host: "127.0.0.1",
     port: 0,
@@ -30,6 +34,7 @@ async function startDevelopmentServer(options?: { now?: () => number }) {
     developmentLoginEnabled: true,
     runtimeEnvironment: "test",
     now: options?.now,
+    reconnectGraceSeconds: options?.reconnectGraceSeconds,
   });
   return `http://127.0.0.1:${String(runningServer.port)}`;
 }
@@ -152,6 +157,7 @@ describe("village public presence", () => {
         expect(state).toContain('"facing":"south"');
         expect(state).toContain('"animation":"idle"');
         expect(state).not.toMatch(/userId|characterId|roomId|ticket/i);
+        expect(state).not.toContain("lastProcessedSequence");
       }
     });
   });
@@ -177,6 +183,82 @@ describe("village public presence", () => {
       expect(observedPlayer(observer, first.sessionId)?.animation).toBe("idle");
     });
   });
+
+  it("processes delayed and out-of-order input once in sequence order", async () => {
+    const endpoint = await startDevelopmentServer();
+    const player = await joinVillage(endpoint, "Sequenced Ranger");
+    const rejections: string[] = [];
+    let authoritative: AuthoritativeMovementSnapshot | undefined;
+    player.onMessage<{ code: string }>(
+      SERVER_MESSAGES.intentionRejected,
+      ({ code }) => rejections.push(code),
+    );
+    player.onMessage<AuthoritativeMovementSnapshot>(
+      SERVER_MESSAGES.authoritativeMovement,
+      (snapshot) => {
+        authoritative = snapshot;
+      },
+    );
+
+    player.send(CLIENT_MESSAGES.movement, { x: 0, y: 0, sequence: 2 });
+    player.send(CLIENT_MESSAGES.movement, { x: 1, y: 0, sequence: 1 });
+    player.send(CLIENT_MESSAGES.movement, { x: 1, y: 0, sequence: 1 });
+
+    await waitUntil(() => {
+      expect(authoritative?.lastProcessedSequence).toBe(2);
+      expect(authoritative?.x).toBeCloseTo(132.6, 4);
+    });
+    expect(rejections).toEqual([]);
+  });
+
+  it.each([150, 250])(
+    "converges without exceeding authoritative speed at %i ms latency",
+    async (latencyMs) => {
+      const endpoint = await startDevelopmentServer();
+      const player = await joinVillage(endpoint, "Latency Ranger");
+      const observer = await joinVillage(endpoint, "Latency Observer");
+      let authoritative: AuthoritativeMovementSnapshot | undefined;
+      const observerCorrections: AuthoritativeMovementSnapshot[] = [];
+      player.onMessage<AuthoritativeMovementSnapshot>(
+        SERVER_MESSAGES.authoritativeMovement,
+        (snapshot) => {
+          authoritative = snapshot;
+        },
+      );
+      observer.onMessage<AuthoritativeMovementSnapshot>(
+        SERVER_MESSAGES.authoritativeMovement,
+        (snapshot) => observerCorrections.push(snapshot),
+      );
+      const sends: Promise<void>[] = [];
+      for (let sequence = 1; sequence <= 10; sequence += 1) {
+        sends.push(
+          new Promise((resolve) => {
+            setTimeout(
+              () => {
+                player.send(CLIENT_MESSAGES.movement, {
+                  x: 1,
+                  y: 0,
+                  sequence,
+                });
+                resolve();
+              },
+              latencyMs / 2 + sequence * 50,
+            );
+          }),
+        );
+      }
+      await Promise.all(sends);
+
+      await waitUntil(() => {
+        expect(authoritative?.lastProcessedSequence).toBe(10);
+        for (const room of [player, observer]) {
+          const observed = observedPlayer(room, player.sessionId);
+          expect(observed?.x).toBeCloseTo(174, 4);
+        }
+      });
+      expect(observerCorrections).toEqual([]);
+    },
+  );
 
   it("rejects forged coordinates and excessive speed", async () => {
     const endpoint = await startDevelopmentServer();
@@ -257,6 +339,48 @@ describe("village public presence", () => {
 
     await waitUntil(() => {
       expect(observedPlayer(staying, leaving.sessionId)).toBeUndefined();
+    });
+  });
+
+  it("restores the same live entity after a short disconnect", async () => {
+    const endpoint = await startDevelopmentServer();
+    const reconnecting = await joinVillage(endpoint, "Returning Ranger");
+    const observer = await joinVillage(endpoint, "Patient Ranger");
+    const entityId = reconnecting.sessionId;
+    reconnecting.reconnection.minUptime = 0;
+    reconnecting.reconnection.minDelay = 10;
+    reconnecting.reconnection.delay = 10;
+    reconnecting.reconnection.maxDelay = 20;
+    const didReconnect = new Promise<void>((resolve) =>
+      reconnecting.onReconnect.once(resolve),
+    );
+
+    void reconnecting.leave(false);
+    await expect(didReconnect).resolves.toBeUndefined();
+    expect(reconnecting.sessionId).toBe(entityId);
+    await waitUntil(() => {
+      expect(observedPlayer(reconnecting, entityId)).toBeDefined();
+      expect(observedPlayer(observer, entityId)).toBeDefined();
+    });
+  });
+
+  it("removes a disconnected entity after its reconnect grace expires", async () => {
+    const endpoint = await startDevelopmentServer({
+      reconnectGraceSeconds: 0.1,
+    });
+    const expiring = await joinVillage(endpoint, "Expired Ranger");
+    const observer = await joinVillage(endpoint, "Cleanup Ranger");
+    const entityId = expiring.sessionId;
+    expiring.reconnection.enabled = false;
+    const didLeave = new Promise<void>((resolve) =>
+      expiring.onLeave.once(() => resolve()),
+    );
+
+    void expiring.leave(false);
+    await didLeave;
+    joinedRooms.splice(joinedRooms.indexOf(expiring), 1);
+    await waitUntil(() => {
+      expect(observedPlayer(observer, entityId)).toBeUndefined();
     });
   });
 });

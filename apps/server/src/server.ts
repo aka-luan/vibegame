@@ -22,6 +22,7 @@ export interface StartFoundationServerOptions {
   developmentLoginEnabled?: boolean | undefined;
   runtimeEnvironment?: "development" | "test" | "production" | undefined;
   now?: (() => number) | undefined;
+  reconnectGraceSeconds?: number | undefined;
   logger?: boolean | undefined;
 }
 
@@ -94,7 +95,12 @@ export async function startFoundationServer(
   if (developmentPlayTickets) {
     gameServer.define(
       ROOM_NAMES.village,
-      createVillageRoom(developmentPlayTickets),
+      createVillageRoom(developmentPlayTickets, {
+        ...(options.now === undefined ? {} : { now: options.now }),
+        ...(options.reconnectGraceSeconds === undefined
+          ? {}
+          : { reconnectGraceSeconds: options.reconnectGraceSeconds }),
+      }),
     );
   }
   await gameServer.listen(options.port, options.host);

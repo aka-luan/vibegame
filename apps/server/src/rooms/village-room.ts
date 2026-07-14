@@ -6,6 +6,7 @@ import {
   CLIENT_MESSAGES,
   ERROR_CODES,
   SERVER_MESSAGES,
+  type AuthoritativeMovementSnapshot,
   type MovementIntention,
 } from "@gameish/protocol";
 import { moveBody } from "@gameish/world";
@@ -31,6 +32,7 @@ const FIXED_STEP_MS = 50;
 const MOVEMENT_SPEED = 92;
 const MAX_MOVEMENT_MESSAGE_BYTES = 256;
 const MAX_INTENTION_VIOLATIONS = 5;
+const MAX_PENDING_INTENTIONS = 120;
 
 class PublicAppearance extends Schema {
   @type("string")
@@ -64,15 +66,27 @@ class PublicPlayer extends Schema {
 }
 
 class VillageState extends Schema {
+  @type("number")
+  serverTimeMs = 0;
+
   @type({ map: PublicPlayer })
   players = new MapSchema<PublicPlayer>();
 }
 
-export function createVillageRoom(playTickets: DevelopmentPlayTickets) {
+export function createVillageRoom(
+  playTickets: DevelopmentPlayTickets,
+  options: { now?: () => number; reconnectGraceSeconds?: number } = {},
+) {
   return class VillageRoom extends Room<{ state: VillageState }> {
     override state = new VillageState();
-    readonly #intentions = new Map<string, MovementIntention>();
+    readonly #pendingIntentions = new Map<
+      string,
+      Map<number, MovementIntention>
+    >();
     readonly #intentionViolations = new Map<string, number>();
+    readonly #lastProcessedSequences = new Map<string, number>();
+    readonly #now = options.now ?? Date.now;
+    readonly #reconnectGraceSeconds = options.reconnectGraceSeconds ?? 5;
 
     override onCreate() {
       this.maxMessagesPerSecond = 60;
@@ -81,18 +95,26 @@ export function createVillageRoom(playTickets: DevelopmentPlayTickets) {
         (client, unsafeIntention: unknown) => {
           const encodedIntention = JSON.stringify(unsafeIntention);
           const intention = movementIntentionSchema.safeParse(unsafeIntention);
-          const previous = this.#intentions.get(client.sessionId);
+          const player = this.state.players.get(client.sessionId);
+          const pending = this.#pendingIntentions.get(client.sessionId);
+          const lastProcessedSequence = this.#lastProcessedSequences.get(
+            client.sessionId,
+          );
           if (
             encodedIntention === undefined ||
             Buffer.byteLength(encodedIntention) > MAX_MOVEMENT_MESSAGE_BYTES ||
             !intention.success ||
-            (previous !== undefined &&
-              intention.data.sequence <= previous.sequence)
+            !player ||
+            !pending ||
+            lastProcessedSequence === undefined ||
+            intention.data.sequence >
+              lastProcessedSequence + MAX_PENDING_INTENTIONS
           ) {
             this.#rejectIntention(client);
             return;
           }
-          this.#intentions.set(client.sessionId, intention.data);
+          if (intention.data.sequence <= lastProcessedSequence) return;
+          pending.set(intention.data.sequence, intention.data);
         },
       );
       this.setSimulationInterval(
@@ -121,14 +143,27 @@ export function createVillageRoom(playTickets: DevelopmentPlayTickets) {
       player.y = spawn.y;
       player.appearance.assign(consumption.admission.appearance);
       this.state.players.set(client.sessionId, player);
-      this.#intentions.set(client.sessionId, { x: 0, y: 0, sequence: -1 });
+      this.#pendingIntentions.set(client.sessionId, new Map());
+      this.#lastProcessedSequences.set(client.sessionId, 0);
       this.#intentionViolations.set(client.sessionId, 0);
     }
 
     override onLeave(client: Client) {
-      this.#intentions.delete(client.sessionId);
+      this.#pendingIntentions.delete(client.sessionId);
       this.#intentionViolations.delete(client.sessionId);
+      this.#lastProcessedSequences.delete(client.sessionId);
       this.state.players.delete(client.sessionId);
+    }
+
+    override onDrop(client: Client) {
+      if (!this.state.players.has(client.sessionId)) return;
+      void this.allowReconnection(client, this.#reconnectGraceSeconds).catch(
+        () => undefined,
+      );
+    }
+
+    override onReconnect(client: Client) {
+      this.#sendAuthoritativeMovement(client);
     }
 
     #rejectIntention(client: Client) {
@@ -143,12 +178,25 @@ export function createVillageRoom(playTickets: DevelopmentPlayTickets) {
     }
 
     #simulateFixedStep() {
+      this.state.serverTimeMs = this.#now();
       for (const [sessionId, player] of this.state.players) {
-        const intention = this.#intentions.get(sessionId);
-        if (!intention) continue;
+        const pending = this.#pendingIntentions.get(sessionId);
+        const lastProcessedSequence =
+          this.#lastProcessedSequences.get(sessionId) ?? 0;
+        const nextSequence = lastProcessedSequence + 1;
+        const intention = pending?.get(nextSequence);
+        if (!intention) {
+          player.animation = "idle";
+          continue;
+        }
+        pending?.delete(nextSequence);
+        this.#lastProcessedSequences.set(sessionId, nextSequence);
         const isMoving = intention.x !== 0 || intention.y !== 0;
         player.animation = isMoving ? "walk" : "idle";
-        if (!isMoving) continue;
+        if (!isMoving) {
+          this.#sendAuthoritativeMovementBySessionId(sessionId);
+          continue;
+        }
 
         if (intention.y < 0) player.facing = "north";
         else if (intention.y > 0) player.facing = "south";
@@ -175,7 +223,30 @@ export function createVillageRoom(playTickets: DevelopmentPlayTickets) {
         });
         player.x = moved.x - villageCharacter.collision.offsetX;
         player.y = moved.y - villageCharacter.collision.offsetY;
+        this.#sendAuthoritativeMovementBySessionId(sessionId);
       }
+    }
+
+    #sendAuthoritativeMovementBySessionId(sessionId: string) {
+      const client = this.clients.find(
+        (candidate) => candidate.sessionId === sessionId,
+      );
+      if (client) this.#sendAuthoritativeMovement(client);
+    }
+
+    #sendAuthoritativeMovement(client: Client) {
+      const player = this.state.players.get(client.sessionId);
+      const lastProcessedSequence = this.#lastProcessedSequences.get(
+        client.sessionId,
+      );
+      if (!player || lastProcessedSequence === undefined) return;
+      const snapshot: AuthoritativeMovementSnapshot = {
+        x: player.x,
+        y: player.y,
+        lastProcessedSequence,
+        serverTimeMs: this.state.serverTimeMs,
+      };
+      client.send(SERVER_MESSAGES.authoritativeMovement, snapshot);
     }
   };
 }

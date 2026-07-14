@@ -64,3 +64,36 @@ test("two browser contexts see each other in the village", async ({
 
   await Promise.all([firstContext.close(), secondContext.close()]);
 });
+
+test("two-player presence survives a short browser interruption", async ({
+  browser,
+}) => {
+  const reconnectingContext = await browser.newContext();
+  const observerContext = await browser.newContext();
+  const reconnecting = await reconnectingContext.newPage();
+  const observer = await observerContext.newPage();
+
+  await Promise.all([
+    reconnecting.goto("/?name=Returning%20Ranger&latency=200"),
+    observer.goto("/?name=Patient%20Ranger"),
+  ]);
+  await Promise.all([
+    expect(reconnecting.getByText("2 players connected")).toBeVisible(),
+    expect(observer.getByText("2 players connected")).toBeVisible(),
+  ]);
+
+  await reconnectingContext.setOffline(true);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await expect(observer.getByText("2 players connected")).toBeVisible();
+  await reconnectingContext.setOffline(false);
+
+  await expect(reconnecting.getByText("Network connected")).toBeVisible({
+    timeout: 5_000,
+  });
+  await Promise.all([
+    expect(reconnecting.getByText("2 players connected")).toBeVisible(),
+    expect(observer.getByText("2 players connected")).toBeVisible(),
+  ]);
+
+  await Promise.all([reconnectingContext.close(), observerContext.close()]);
+});

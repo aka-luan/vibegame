@@ -1,5 +1,7 @@
 import villageMap from "@gameish/content/village-map";
 import type { PublicPlayerPresence } from "@gameish/protocol";
+import villageCharacter from "@gameish/content/village-character";
+import { moveBody } from "@gameish/world";
 import Phaser from "phaser";
 
 import type {
@@ -11,6 +13,11 @@ import {
   preloadVillageCharacter,
 } from "./manifest-character-renderer.js";
 import { MovementInput } from "./movement-input.js";
+import {
+  MovementSynchronizer,
+  RemoteInterpolator,
+  ServerTimeEstimator,
+} from "../network/movement-synchronizer.js";
 
 export interface WorldSnapshot {
   x: number;
@@ -19,6 +26,9 @@ export interface WorldSnapshot {
   state: PublicPlayerPresence["animation"];
   interaction: string | null;
   publicPlayerCount: number;
+  connectionStatus: VillagePresenceSnapshot["connectionStatus"];
+  predictionError: number;
+  serverTimeOffsetMs: number;
 }
 
 export interface WorldRenderer {
@@ -32,14 +42,28 @@ interface VillageSceneOptions {
   onReady: (input: MovementInput) => void;
 }
 
+function predictedFacing(
+  direction: { x: number; y: number },
+  current: PublicPlayerPresence["facing"],
+): PublicPlayerPresence["facing"] {
+  if (direction.y < 0) return "north";
+  if (direction.y > 0) return "south";
+  if (direction.x < 0) return "west";
+  if (direction.x > 0) return "east";
+  return current;
+}
+
 class VillageScene extends Phaser.Scene {
   readonly #options: VillageSceneOptions;
   readonly #characters = new Map<string, ManifestCharacterRenderer>();
+  readonly #remoteMovement = new Map<string, RemoteInterpolator>();
+  readonly #serverClock = new ServerTimeEstimator();
   #input?: MovementInput;
   #unsubscribePresence?: () => void;
   #indicator?: Phaser.GameObjects.Container;
-  #lastDirection = "";
-  #inputSequence = 0;
+  #movement?: MovementSynchronizer;
+  #latestPresence?: VillagePresenceSnapshot;
+  #predictionError = 0;
   #lastSnapshot = "";
 
   constructor(options: VillageSceneOptions) {
@@ -130,21 +154,53 @@ class VillageScene extends Phaser.Scene {
     });
   }
 
-  override update(time: number): void {
+  override update(time: number, delta: number): void {
     if (!this.#input) return;
     const direction = this.#input.direction();
-    const serializedDirection = `${String(direction.x)},${String(direction.y)}`;
-    if (serializedDirection !== this.#lastDirection) {
-      this.#lastDirection = serializedDirection;
-      this.#options.presence.sendMovement({
-        ...direction,
-        sequence: ++this.#inputSequence,
-      });
+    if (this.#movement) {
+      for (const intention of this.#movement.advance(direction, delta)) {
+        this.#options.presence.sendMovement(intention);
+      }
+      const localId = this.#latestPresence?.localEntityId;
+      const localCharacter = localId
+        ? this.#characters.get(localId)
+        : undefined;
+      const localPlayer = this.#latestPresence?.players.find(
+        (player) => player.entityId === localId,
+      );
+      if (localCharacter && localPlayer) {
+        const predicted = this.#movement.position;
+        const presentation = {
+          ...localPlayer,
+          ...predicted,
+          facing: predictedFacing(direction, localPlayer.facing),
+          animation:
+            direction.x === 0 && direction.y === 0
+              ? ("idle" as const)
+              : ("walk" as const),
+        };
+        localCharacter.applyFacing(presentation.facing);
+        localCharacter.play(presentation.animation);
+        localCharacter.setFootPosition(predicted.x, predicted.y);
+        this.#publishSnapshot(
+          presentation,
+          this.#latestPresence?.players.length ?? 0,
+        );
+      }
+    }
+    const renderServerTime = this.#serverClock.serverTimeAt(Date.now()) - 100;
+    for (const [entityId, interpolator] of this.#remoteMovement) {
+      const position = interpolator.sample(renderServerTime);
+      if (position) {
+        this.#characters.get(entityId)?.setFootPosition(position.x, position.y);
+      }
     }
     for (const character of this.#characters.values()) character.update(time);
   }
 
   #applyPresence(snapshot: VillagePresenceSnapshot): void {
+    this.#latestPresence = snapshot;
+    this.#serverClock.observe(snapshot.serverTimeMs, Date.now());
     const currentIds = new Set(
       snapshot.players.map((player) => player.entityId),
     );
@@ -152,6 +208,7 @@ class VillageScene extends Phaser.Scene {
       if (currentIds.has(entityId)) continue;
       character.display.destroy(true);
       this.#characters.delete(entityId);
+      this.#remoteMovement.delete(entityId);
     }
 
     for (const player of snapshot.players) {
@@ -171,7 +228,46 @@ class VillageScene extends Phaser.Scene {
       }
       character.applyFacing(player.facing);
       character.play(player.animation);
-      character.setFootPosition(player.x, player.y);
+      if (player.entityId === snapshot.localEntityId) {
+        if (!this.#movement) {
+          this.#movement = new MovementSynchronizer({
+            initialPosition: player,
+            fixedStepMs: 50,
+            correctionTolerance: 1.5,
+            integrate: (position, direction, elapsedMs) => {
+              const bodyPosition = {
+                x: position.x + villageCharacter.collision.offsetX,
+                y: position.y + villageCharacter.collision.offsetY,
+              };
+              const moved = moveBody({
+                position: bodyPosition,
+                direction,
+                speed: 92,
+                elapsedMs,
+                body: villageCharacter.collision,
+                world: villageMap.movement,
+              });
+              return {
+                x: moved.x - villageCharacter.collision.offsetX,
+                y: moved.y - villageCharacter.collision.offsetY,
+              };
+            },
+          });
+        }
+        const reconciliation = snapshot.localMovement
+          ? this.#movement.reconcile(snapshot.localMovement)
+          : { corrected: false, error: 0 };
+        this.#predictionError = reconciliation.error;
+        const predicted = this.#movement.position;
+        character.setFootPosition(predicted.x, predicted.y);
+      } else {
+        let interpolator = this.#remoteMovement.get(player.entityId);
+        if (!interpolator) {
+          interpolator = new RemoteInterpolator();
+          this.#remoteMovement.set(player.entityId, interpolator);
+        }
+        interpolator.push(player, snapshot.serverTimeMs);
+      }
     }
 
     this.game.canvas.dataset.publicPlayerCount = String(this.#characters.size);
@@ -197,6 +293,9 @@ class VillageScene extends Phaser.Scene {
       state: local.animation,
       interaction: nearHint && hint ? hint.label : null,
       publicPlayerCount: playerCount,
+      connectionStatus: this.#latestPresence?.connectionStatus ?? "connected",
+      predictionError: this.#predictionError,
+      serverTimeOffsetMs: this.#serverClock.offsetMs,
     };
     const serialized = JSON.stringify(snapshot);
     if (serialized === this.#lastSnapshot) return;

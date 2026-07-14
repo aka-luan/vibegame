@@ -17,6 +17,9 @@ const initialSnapshot: WorldSnapshot = {
   state: "idle",
   interaction: null,
   publicPlayerCount: 0,
+  connectionStatus: "connected",
+  predictionError: 0,
+  serverTimeOffsetMs: 0,
 };
 
 const developmentLoginEnabled =
@@ -28,6 +31,13 @@ function requestedDisplayName(): string {
   return name || `Ranger ${crypto.randomUUID().slice(0, 6)}`;
 }
 
+function requestedSimulatedLatency(): number {
+  const value = Number(
+    new URLSearchParams(window.location.search).get("latency") ?? 0,
+  );
+  return Number.isFinite(value) ? Math.max(0, Math.min(500, value)) : 0;
+}
+
 export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   const renderer = useRef<WorldRenderer | null>(null);
   const presence = useRef<VillagePresence | null>(null);
@@ -35,6 +45,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [developmentRoomId, setDevelopmentRoomId] = useState<string | null>(
     null,
+  );
+  const [simulatedLatencyMs, setSimulatedLatencyMs] = useState(
+    requestedSimulatedLatency,
   );
 
   useEffect(() => {
@@ -44,7 +57,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       return () => undefined;
     }
 
-    void connectDevelopmentVillage(requestedDisplayName())
+    void connectDevelopmentVillage(requestedDisplayName(), {
+      simulatedLatencyMs,
+    })
       .then((connectedPresence) => {
         if (!active) return connectedPresence.close();
         presence.current = connectedPresence;
@@ -78,7 +93,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       {connectionError ? <p role="alert">{connectionError}</p> : null}
       <p className="world-status" aria-live="polite">
         {snapshot.publicPlayerCount} players connected. Facing {snapshot.facing}
-        ; {snapshot.state}.
+        ; {snapshot.state}. Network {snapshot.connectionStatus}.
       </p>
       {snapshot.interaction ? (
         <p className="interaction-hint">E — {snapshot.interaction}</p>
@@ -90,6 +105,26 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
         <details className="development-overlay">
           <summary>Development room inspection</summary>
           <code>{developmentRoomId}</code>
+          <label>
+            Simulated round-trip latency: {simulatedLatencyMs} ms
+            <input
+              aria-label="Simulated round-trip latency"
+              type="range"
+              min="0"
+              max="500"
+              step="25"
+              value={simulatedLatencyMs}
+              onChange={(event) => {
+                const latencyMs = Number(event.currentTarget.value);
+                setSimulatedLatencyMs(latencyMs);
+                presence.current?.setSimulatedLatency(latencyMs);
+              }}
+            />
+          </label>
+          <span>
+            Prediction error: {snapshot.predictionError.toFixed(2)} px; server
+            offset: {snapshot.serverTimeOffsetMs.toFixed(0)} ms.
+          </span>
         </details>
       ) : null}
     </aside>

@@ -18,6 +18,7 @@ export const CLIENT_MESSAGES = {
 } as const;
 
 export const SERVER_MESSAGES = {
+  authoritativeMovement: "authoritative_movement",
   intentionRejected: "intention_rejected",
 } as const;
 
@@ -25,6 +26,13 @@ export interface MovementIntention {
   x: number;
   y: number;
   sequence: number;
+}
+
+export interface AuthoritativeMovementSnapshot {
+  x: number;
+  y: number;
+  lastProcessedSequence: number;
+  serverTimeMs: number;
 }
 
 export interface PublicAppearance {
