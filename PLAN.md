@@ -27,9 +27,9 @@ This project is an original browser-first 2D multiplayer action RPG. References 
 
 The workspace is greenfield:
 
-- Only empty `.git`, `.agents`, and `.codex` directories existed at assessment time.
-- `.git` was not initialized Git metadata.
-- There were no commits, source files, assets, manifests, dependencies, tests, configuration, or documentation.
+- The workspace contained only this plan document plus empty `.agents` and `.codex` directories.
+- No Git metadata existed.
+- There were no commits, source files, assets, manifests, dependencies, tests, or configuration.
 - Nothing was reusable.
 - No technology conflicts existed.
 - All stack and repository decisions remained open.
@@ -365,7 +365,7 @@ flowchart LR
 - Run fixed-step map simulation.
 - Enforce movement speed and collision.
 - Control monsters, aggro, abilities, deaths, and respawns.
-- Validate targeting, range, line of sight, resources, and cooldowns.
+- Validate targeting, range, resources, and cooldowns; targeting validation is range-based for the vertical slice.
 - Determine participation, quest credit, XP, currency, and loot.
 - Coordinate durable transactions.
 - Filter what each player receives.
@@ -412,6 +412,8 @@ PostgreSQL is not the live map simulation store.
 8. The ticket binds user, character, logical destination, expiry, and nonce.
 9. Development login exists only when an explicit development flag is active.
 
+Because the session credential is a cookie, the client and the API must share an origin (for example behind one reverse proxy) or at minimum same-site subdomains. A deployment that serves the client and the API from unrelated origins makes the session cookie a third-party cookie that browsers will not send, breaking guest sessions.
+
 No password or email system is required for the slice.
 
 ### Map-transition flow
@@ -450,7 +452,7 @@ Rules:
 ### Combat-message flow
 
 1. Client sends an ability intention with action sequence, ability slot, and target.
-2. Server validates rate, state, target, distance, line of sight, cooldown, resource, and control effects.
+2. Server validates rate, state, target, distance, cooldown, resource, and control effects.
 3. Server resolves the ability using server time and server RNG.
 4. Simulation mutates health, resources, statuses, cooldowns, and threat.
 5. Public combat events are broadcast.
@@ -459,6 +461,8 @@ Rules:
 8. Durable rewards are written atomically.
 9. Each eligible player receives a private reward result.
 10. Quest progress changes are sent only to the affected character.
+
+Targeting validation is range-based for the vertical slice. Line-of-sight raycasting is deferred; when introduced later, it would live in the shared `world` package alongside geometry and collision.
 
 ### Persistence flow
 
@@ -492,7 +496,7 @@ Do not write movement every server tick.
 
 ### Error handling
 
-- Typed stable codes such as `ABILITY_ON_COOLDOWN`, `OUT_OF_RANGE`, `MAP_LOCKED`, `INSTANCE_UNAVAILABLE`, and `STALE_CHARACTER_REVISION`.
+- Typed stable codes such as `ABILITY_ON_COOLDOWN`, `OUT_OF_RANGE`, `MAP_LOCKED`, `INSTANCE_UNAVAILABLE`, `STALE_CONTENT_VERSION`, and `STALE_CHARACTER_REVISION`.
 - Expected domain errors do not produce stack traces for clients.
 - Every request/action has a correlation or action ID.
 - Unknown server errors log structured context and return a generic safe response.
@@ -742,6 +746,8 @@ Later:
 9. On drop, attempt bounded exponential-backoff reconnection.
 10. On expiry, request a new ticket and placement.
 
+If a deployment changes the content version mid-session, a room join carrying a stale content version is rejected with the typed error `STALE_CONTENT_VERSION`, and the client prompts the player to reload rather than continuing against mismatched content.
+
 ### Room lifecycle
 
 - One Colyseus room represents one instance of one logical map.
@@ -838,7 +844,7 @@ Internal room identifiers are absent from normal message shapes.
 - Server time controls cooldowns.
 - No client-provided damage, healing, cost, drop, or position result is trusted.
 - Basic attack may auto-repeat server-side while the target remains valid, reducing message spam.
-- Monster telegraphs include server start time and duration.
+- Monster telegraphs include server start time and duration. The client maintains a server-time offset estimate, established alongside prediction and interpolation, so telegraph timing renders accurately in local time.
 - Production randomness comes from a server RNG; tests inject a seeded RNG.
 
 ### Monster synchronization
@@ -907,6 +913,8 @@ Broadcast only what another player needs to render and understand the local map.
 
 ## Milestone plan
 
+If the slice must shrink, Milestone 7 is the first candidate cut. Hidden instancing, party seat reservations, and overflow form the heaviest and least player-visible milestone; one public instance per logical map and no parties still proves the core loop of movement, combat, quests, rewards, equipment, and persistence.
+
 ### Milestone 0 — Product and technical foundation
 
 Player-visible result: a browser shell and server health page, not yet a game.
@@ -922,6 +930,7 @@ Work:
 - Establish formatting, linting, TypeScript, Vitest, and Playwright.
 - Add web/server/database health checks.
 - Validate a Phaser 4 Tiled-rendering and layered-sprite spike.
+- Pin the Colyseus version and validate a spike verifying the per-client state-filtering approach required by the public/private state split.
 - Define commands and CI.
 - Define stable ID and content conventions.
 
@@ -932,6 +941,7 @@ Acceptance:
 - Server and database readiness are distinguishable.
 - Invalid sample content fails with a useful path and message.
 - ADR either confirms Phaser 4 or records a concrete fallback.
+- The pinned Colyseus release demonstrably supports the required per-client state filtering, recorded with a documented upgrade path.
 
 Manual verification: follow README from a clean environment.
 
@@ -1041,7 +1051,7 @@ Manual verification: solo and cooperative fights under latency simulation.
 
 Risks: too many ability mechanics too early.
 
-Deferred: complex threat, projectile physics, dozens of status types.
+Deferred: complex threat, projectile physics, line-of-sight validation, dozens of status types.
 
 Completion definition: all combat outcomes can be reproduced from authoritative inputs and seeded RNG.
 
@@ -1206,14 +1216,14 @@ Work:
 - Ten to fifteen items.
 - One armor set.
 - Shop purchase.
-- Local/world map.
+- Local/world map polish, refining the interface built in M7 rather than constructing new map UI.
 - Final tracker and guidance.
 - Optional chat.
 - Usability and accessibility pass.
 
 Acceptance:
 
-- All sixteen requested journey steps work.
+- All fourteen requested journey steps work.
 - Content counts meet the agreed slice.
 - Every content reference and asset validates.
 - New player can complete the primary quest without developer help.
@@ -1377,7 +1387,7 @@ Paths are prospective because the repository is currently empty.
 
 #### T12 — Add prediction, interpolation, and speed enforcement
 
-- Context/scope: input sequencing, reconciliation, remote interpolation, latency simulation.
+- Context/scope: input sequencing, reconciliation, remote interpolation, server-time offset estimation, latency simulation.
 - Likely areas: world, web prediction/network, server movement.
 - Acceptance: speed cheats are rejected and normal movement remains smooth under test latency.
 - Automated validation: deterministic multiplayer and Playwright two-context tests.
@@ -1429,7 +1439,7 @@ Paths are prospective because the repository is currently empty.
 - Acceptance: eligible players receive independent outcomes; spectators do not.
 - Automated validation: participation matrix and idempotency-interface tests.
 - Manual validation: two-client kill.
-- Out of scope/dependencies/parallel: rewards remain in-memory until T23; depends on T16.
+- Out of scope/dependencies/parallel: rewards remain in-memory until T23, but reward mutations must go through the durable persistence interface from the start so the M5 PostgreSQL swap remains an adapter change; depends on T16.
 
 #### T18 — Add NPC interaction and dialogue
 
@@ -1447,7 +1457,7 @@ Paths are prospective because the repository is currently empty.
 - Acceptance: illegal transitions and duplicate events do not advance state.
 - Automated validation: state-transition tests.
 - Manual validation: complete each objective type.
-- Out of scope/dependencies/parallel: in-memory persistence; depends on T18.
+- Out of scope/dependencies/parallel: in-memory persistence, with quest mutations routed through the durable persistence interface from the start so the M5 PostgreSQL swap remains an adapter change; depends on T18.
 
 #### T20 — Add tracker, guidance, and shared progress
 
@@ -1583,7 +1593,7 @@ Paths are prospective because the repository is currently empty.
 
 #### T34 — Complete onboarding, accessibility, and vertical-slice E2E
 
-- Context/scope: hints, focus, text scaling, feedback, full sixteen-step journey.
+- Context/scope: hints, focus, text scaling, feedback, full fourteen-step journey.
 - Likely areas: web UI, `tests/e2e`.
 - Acceptance: fresh guest completes journey with or without optional guidance.
 - Automated validation: Playwright complete journey plus two-player variant.
@@ -1788,6 +1798,7 @@ Skeletal animation later may reduce redraw work across equipment but introduces 
 | Security and abuse | Medium | High | Secure sessions, short tickets, origin checks, feature-flagged chat, threat model | M5, M8, M9 |
 | Vendor lock-in | Low | Medium | PostgreSQL, WebSocket, JSON, Tiled, portable containers, adapter only where real | M0 |
 | Phaser 4 maturity | Medium | Medium | Pin version, M0 spike, avoid custom renderer internals, documented fallback | M0 |
+| Colyseus version churn | Medium | Medium | Pin version, M0 spike of per-client state filtering, documented upgrade path | M0 |
 | Intellectual-property similarity | Medium | High | Original briefs, name/design review, provenance records, no copied references/assets/UI | M0, M8 |
 | Solo-maintainer overload | High | High | Deep modules, small tasks, runnable milestones, few packages, no speculative infrastructure | Every milestone |
 
@@ -1845,6 +1856,7 @@ Limitations are material:
 - Render free services sleep after inactivity and can take roughly a minute to wake; free Render PostgreSQL also expires, so it should not hold durable project data. See [Render free service limits](https://render.com/docs/free).
 - Neon’s free plan scales to zero and is suitable for intermittent development, but remains quota-limited. See [Neon pricing](https://neon.com/pricing).
 - Cloudflare Pages can host the static client cheaply, but individual files on the free plan have size limits, which matters for large art packs. See [Cloudflare Pages limits](https://developers.cloudflare.com/pages/platform/limits/).
+- Hosting the client on Cloudflare Pages and the API on Render is a split-origin deployment: the guest session cookie becomes a third-party cookie that browsers will not send, which breaks cookie-based guest sessions. The client and API must share an origin through a reverse proxy or use same-site subdomains for this shape to work.
 
 Therefore:
 
@@ -1990,8 +2002,8 @@ The slice is complete only when:
 - They return to the NPC and complete the quest.
 - Progress, inventory, equipment, quests, currency, discovery, and location survive reload and server restart.
 - The slice contains one village, one combat map, one class, two NPC roles, three monster types, one elite/boss, five quests, 10–15 items, one armor set, inventory, equipment, quest tracker, map, multiplayer presence, and feature-flagged chat.
-- Full instances overflow invisibly.
-- Party travel remains cohesive.
+- Full instances overflow invisibly. This requirement is reducible to one public instance per logical map if M7 is cut.
+- Party travel remains cohesive. This requirement is reducible to no parties if M7 is cut.
 - Short and long reconnection work.
 - The automated unit, integration, multiplayer, content, and browser suites pass.
 - Content and assets pass validation.
