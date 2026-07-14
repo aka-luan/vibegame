@@ -21,7 +21,7 @@
     "test": "vitest run --config vitest.config.ts",
     "test:e2e": "playwright test",
     "test:integration": "pnpm --filter @gameish/database build && vitest run --config tests/vitest.integration.config.ts",
-    "test:multiplayer": "vitest run --config tests/vitest.multiplayer.config.ts",
+    "test:multiplayer": "pnpm --filter @gameish/content build && pnpm --filter @gameish/protocol build && pnpm --filter @gameish/world build && vitest run --config tests/vitest.multiplayer.config.ts",
     "typecheck": "tsc -p tsconfig.json && pnpm -r --if-present typecheck",
     "validate": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm content:validate"
   },

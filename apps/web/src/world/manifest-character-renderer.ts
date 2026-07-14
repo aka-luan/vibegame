@@ -1,6 +1,7 @@
 import type Phaser from "phaser";
 
 import villageCharacter from "@gameish/content/village-character";
+import type { PublicAppearance } from "@gameish/protocol";
 
 export type Facing = "north" | "south" | "east" | "west";
 export type CharacterState = "idle" | "walk";
@@ -62,11 +63,32 @@ export class ManifestCharacterRenderer implements CharacterRenderer {
   #facing: Facing = "south";
   #state: CharacterState = "idle";
 
-  constructor(scene: Phaser.Scene, x: number, y: number) {
+  constructor(
+    scene: Phaser.Scene,
+    x: number,
+    y: number,
+    displayName: string,
+    appearance?: PublicAppearance,
+  ) {
     const shadow = scene.add.ellipse(0, -2, 16, 6, 0x0d1711, 0.45);
-    const orderedLayers = [...villageCharacter.layers].sort(
-      (first, second) => first.depth - second.depth,
-    );
+    const nameLabel = scene.add
+      .text(0, -29, displayName, {
+        color: "#f4f4dd",
+        backgroundColor: "rgb(13 23 17 / 75%)",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "7px",
+        padding: { x: 2, y: 1 },
+      })
+      .setOrigin(0.5, 1);
+    if (appearance && appearance.rigId !== villageCharacter.id) {
+      throw new Error(`Unsupported public rig: ${appearance.rigId}`);
+    }
+    const visibleLayerIds = appearance
+      ? new Set([appearance.baseLayerId, appearance.armorLayerId])
+      : undefined;
+    const orderedLayers = villageCharacter.layers
+      .filter((layer) => visibleLayerIds?.has(layer.id) ?? true)
+      .sort((first, second) => first.depth - second.depth);
     this.#sprites = orderedLayers.map((layer) => {
       const source = sourceForLayer(layer.id);
       const sprite = scene.add
@@ -85,6 +107,7 @@ export class ManifestCharacterRenderer implements CharacterRenderer {
     this.display = scene.add.container(x, y, [
       shadow,
       ...this.#sprites.map(({ sprite }) => sprite),
+      nameLabel,
     ]);
     this.display.setScale(villageCharacter.displayScale);
     this.setFootPosition(x, y);

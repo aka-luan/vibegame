@@ -7,10 +7,18 @@ import { startFoundationServer } from "./server.js";
 const config = parseServerConfig(process.env);
 await assertCanonicalContent();
 const database = connectDatabase(config.DATABASE_URL);
+const publicAddress =
+  config.PUBLIC_GAME_SERVER_ADDRESS ??
+  (config.DEVELOPMENT_LOGIN_ENABLED
+    ? `${config.HOST}:${String(config.PORT)}`
+    : undefined);
 const server = await startFoundationServer({
   host: config.HOST,
   port: config.PORT,
+  publicAddress,
   readinessProbe: database,
+  developmentLoginEnabled: config.DEVELOPMENT_LOGIN_ENABLED,
+  runtimeEnvironment: config.NODE_ENV,
 });
 
 server.app.log.info({ port: server.port }, "Foundation server listening");

@@ -15,6 +15,7 @@
     "@gameish/content": "workspace:*",
     "@gameish/database": "workspace:*",
     "@gameish/protocol": "workspace:*",
+    "@gameish/world": "workspace:*",
     "express": "5.2.1",
     "@colyseus/core": "0.17.42",
     "fastify": "5.10.0",

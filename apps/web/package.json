@@ -10,7 +10,9 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@colyseus/sdk": "0.17.43",
     "@gameish/content": "workspace:*",
+    "@gameish/protocol": "workspace:*",
     "@gameish/world": "workspace:*",
     "phaser": "4.2.1",
     "react": "19.2.7",

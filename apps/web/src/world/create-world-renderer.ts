@@ -1,11 +1,12 @@
-import villageCharacter from "@gameish/content/village-character";
 import villageMap from "@gameish/content/village-map";
-import { moveBody } from "@gameish/world";
+import type { PublicPlayerPresence } from "@gameish/protocol";
 import Phaser from "phaser";
 
+import type {
+  VillagePresence,
+  VillagePresenceSnapshot,
+} from "../network/village-presence.js";
 import {
-  type CharacterState,
-  type Facing,
   ManifestCharacterRenderer,
   preloadVillageCharacter,
 } from "./manifest-character-renderer.js";
@@ -14,9 +15,10 @@ import { MovementInput } from "./movement-input.js";
 export interface WorldSnapshot {
   x: number;
   y: number;
-  facing: Facing;
-  state: CharacterState;
+  facing: PublicPlayerPresence["facing"];
+  state: PublicPlayerPresence["animation"];
   interaction: string | null;
+  publicPlayerCount: number;
 }
 
 export interface WorldRenderer {
@@ -25,18 +27,19 @@ export interface WorldRenderer {
 }
 
 interface VillageSceneOptions {
+  presence: VillagePresence;
   onSnapshot: (snapshot: WorldSnapshot) => void;
   onReady: (input: MovementInput) => void;
 }
 
 class VillageScene extends Phaser.Scene {
   readonly #options: VillageSceneOptions;
+  readonly #characters = new Map<string, ManifestCharacterRenderer>();
   #input?: MovementInput;
-  #character?: ManifestCharacterRenderer;
-  #position = { x: 0, y: 0 };
-  #facing: Facing = "south";
-  #state: CharacterState = "idle";
+  #unsubscribePresence?: () => void;
   #indicator?: Phaser.GameObjects.Container;
+  #lastDirection = "";
+  #inputSequence = 0;
   #lastSnapshot = "";
 
   constructor(options: VillageSceneOptions) {
@@ -89,13 +92,6 @@ class VillageScene extends Phaser.Scene {
       map.createLayer(layerName, tileset, 0, 0)?.setDepth(depth);
     }
 
-    const spawn = villageMap.movement.start;
-    this.#position = {
-      x: spawn.x + villageCharacter.collision.offsetX,
-      y: spawn.y + villageCharacter.collision.offsetY,
-    };
-    this.#character = new ManifestCharacterRenderer(this, spawn.x, spawn.y);
-
     const hint = villageMap.interactionHints[0];
     if (hint) {
       const marker = this.add
@@ -124,60 +120,83 @@ class VillageScene extends Phaser.Scene {
         villageMap.movement.bounds.height,
       )
       .setZoom(2)
-      .startFollow(this.#character.display, true, 0.18, 0.18)
       .setRoundPixels(true);
 
     this.#input = new MovementInput(this.game.canvas);
     this.#options.onReady(this.#input);
     this.#input.focus();
-    this.#publishSnapshot();
+    this.#unsubscribePresence = this.#options.presence.subscribe((snapshot) => {
+      this.#applyPresence(snapshot);
+    });
   }
 
-  override update(time: number, delta: number): void {
-    if (!this.#input || !this.#character) return;
+  override update(time: number): void {
+    if (!this.#input) return;
     const direction = this.#input.direction();
-    const isMoving = direction.x !== 0 || direction.y !== 0;
-    this.#state = isMoving ? "walk" : "idle";
-    if (isMoving) {
-      if (direction.y < 0) this.#facing = "north";
-      else if (direction.y > 0) this.#facing = "south";
-      else if (direction.x < 0) this.#facing = "west";
-      else this.#facing = "east";
-      this.#position = moveBody({
-        position: this.#position,
-        direction,
-        speed: 92,
-        elapsedMs: delta,
-        body: {
-          width: villageCharacter.collision.width,
-          height: villageCharacter.collision.height,
-        },
-        world: villageMap.movement,
+    const serializedDirection = `${String(direction.x)},${String(direction.y)}`;
+    if (serializedDirection !== this.#lastDirection) {
+      this.#lastDirection = serializedDirection;
+      this.#options.presence.sendMovement({
+        ...direction,
+        sequence: ++this.#inputSequence,
       });
     }
-
-    const footX = this.#position.x - villageCharacter.collision.offsetX;
-    const footY = this.#position.y - villageCharacter.collision.offsetY;
-    this.#character.applyFacing(this.#facing);
-    this.#character.play(this.#state);
-    this.#character.setFootPosition(footX, footY);
-    this.#character.update(time);
-    this.#publishSnapshot();
+    for (const character of this.#characters.values()) character.update(time);
   }
 
-  #publishSnapshot(): void {
+  #applyPresence(snapshot: VillagePresenceSnapshot): void {
+    const currentIds = new Set(
+      snapshot.players.map((player) => player.entityId),
+    );
+    for (const [entityId, character] of this.#characters) {
+      if (currentIds.has(entityId)) continue;
+      character.display.destroy(true);
+      this.#characters.delete(entityId);
+    }
+
+    for (const player of snapshot.players) {
+      let character = this.#characters.get(player.entityId);
+      if (!character) {
+        character = new ManifestCharacterRenderer(
+          this,
+          player.x,
+          player.y,
+          player.displayName,
+          player.appearance,
+        );
+        this.#characters.set(player.entityId, character);
+        if (player.entityId === snapshot.localEntityId) {
+          this.cameras.main.startFollow(character.display, true, 0.18, 0.18);
+        }
+      }
+      character.applyFacing(player.facing);
+      character.play(player.animation);
+      character.setFootPosition(player.x, player.y);
+    }
+
+    this.game.canvas.dataset.publicPlayerCount = String(this.#characters.size);
+    this.game.canvas.dataset.publicPlayerNames = JSON.stringify(
+      snapshot.players.map((player) => player.displayName).sort(),
+    );
+    const local = snapshot.players.find(
+      (player) => player.entityId === snapshot.localEntityId,
+    );
+    if (local) this.#publishSnapshot(local, snapshot.players.length);
+  }
+
+  #publishSnapshot(local: PublicPlayerPresence, playerCount: number): void {
     const hint = villageMap.interactionHints[0];
-    const footX = this.#position.x - villageCharacter.collision.offsetX;
-    const footY = this.#position.y - villageCharacter.collision.offsetY;
     const nearHint =
-      hint !== undefined && Math.hypot(footX - hint.x, footY - hint.y) <= 46;
+      hint !== undefined &&
+      Math.hypot(local.x - hint.x, local.y - hint.y) <= 46;
     this.#indicator?.setVisible(nearHint);
     const snapshot: WorldSnapshot = {
-      x: footX,
-      y: footY,
-      facing: this.#facing,
-      state: this.#state,
+      x: local.x,
+      y: local.y,
+      facing: local.facing,
+      state: local.animation,
       interaction: nearHint && hint ? hint.label : null,
+      publicPlayerCount: playerCount,
     };
     const serialized = JSON.stringify(snapshot);
     if (serialized === this.#lastSnapshot) return;
@@ -190,16 +209,20 @@ class VillageScene extends Phaser.Scene {
   }
 
   shutdown(): void {
+    this.#unsubscribePresence?.();
     this.#input?.destroy();
+    this.#characters.clear();
   }
 }
 
 export function createWorldRenderer(
   parent: HTMLElement,
+  presence: VillagePresence,
   onSnapshot: (snapshot: WorldSnapshot) => void,
 ): WorldRenderer {
   let movementInput: MovementInput | undefined;
   const scene = new VillageScene({
+    presence,
     onSnapshot,
     onReady(input) {
       movementInput = input;

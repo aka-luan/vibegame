@@ -49,6 +49,10 @@ async function compileCanonicalAssets(): Promise<void> {
       `${JSON.stringify(map.server, null, 2)}\n`,
     ),
     writeFile(
+      new URL("village-map.server.js", artifactDirectory),
+      moduleSource(map.server),
+    ),
+    writeFile(
       new URL("village-character.js", artifactDirectory),
       moduleSource(manifest.data),
     ),

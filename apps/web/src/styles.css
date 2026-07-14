@@ -81,3 +81,10 @@ body,
   color: #fff4b3;
   font-weight: 700;
 }
+
+.development-overlay {
+  margin-top: 0.75rem;
+  color: #b8d69b;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}

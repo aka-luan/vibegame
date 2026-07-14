@@ -1,5 +1,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { ERROR_CODES } from "@gameish/protocol";
+import { z } from "zod";
+
+import type { DevelopmentPlayTickets } from "../development/play-tickets.js";
 
 export interface ReadinessProbe {
   check(): Promise<void>;
@@ -7,8 +10,13 @@ export interface ReadinessProbe {
 
 export interface HttpAppOptions {
   readinessProbe: ReadinessProbe;
+  developmentPlayTickets?: DevelopmentPlayTickets | undefined;
   logger?: boolean | undefined;
 }
+
+const developmentTicketRequestSchema = z
+  .object({ displayName: z.string().trim().min(1).max(40) })
+  .strict();
 
 export function createHttpApp(options: HttpAppOptions): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? true });
@@ -19,6 +27,19 @@ export function createHttpApp(options: HttpAppOptions): FastifyInstance {
   });
 
   app.get("/health", () => ({ status: "ok" as const }));
+
+  if (options.developmentPlayTickets) {
+    const developmentPlayTickets = options.developmentPlayTickets;
+    app.post("/development/play-ticket", async (request, reply) => {
+      const parsed = developmentTicketRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ code: ERROR_CODES.invalidJoinOptions });
+      }
+      return reply
+        .status(201)
+        .send(developmentPlayTickets.issue(parsed.data.displayName));
+    });
+  }
 
   app.get("/ready", async (request, reply) => {
     try {

@@ -6,15 +6,22 @@ import type {
 
 import { Server } from "@colyseus/core";
 import { WebSocketTransport } from "@colyseus/ws-transport";
+import { ROOM_NAMES } from "@gameish/protocol";
 import type { FastifyInstance } from "fastify";
 
 import { createHttpApp, type ReadinessProbe } from "./http/app.js";
+import { DevelopmentPlayTickets } from "./development/play-tickets.js";
 import { PrivacySpikeRoom } from "./rooms/privacy-spike-room.js";
+import { createVillageRoom } from "./rooms/village-room.js";
 
 export interface StartFoundationServerOptions {
   host: string;
   port: number;
+  publicAddress?: string | undefined;
   readinessProbe: ReadinessProbe;
+  developmentLoginEnabled?: boolean | undefined;
+  runtimeEnvironment?: "development" | "test" | "production" | undefined;
+  now?: (() => number) | undefined;
   logger?: boolean | undefined;
 }
 
@@ -49,8 +56,21 @@ function installRequestDispatcher(
 export async function startFoundationServer(
   options: StartFoundationServerOptions,
 ): Promise<RunningFoundationServer> {
+  if (
+    options.developmentLoginEnabled &&
+    options.runtimeEnvironment !== "development" &&
+    options.runtimeEnvironment !== "test"
+  ) {
+    throw new Error("Development login cannot be enabled in production");
+  }
+  const developmentPlayTickets = options.developmentLoginEnabled
+    ? new DevelopmentPlayTickets(
+        options.now === undefined ? undefined : { now: options.now },
+      )
+    : undefined;
   const app = createHttpApp({
     readinessProbe: options.readinessProbe,
+    developmentPlayTickets,
     logger: options.logger,
   });
   await app.ready();
@@ -64,10 +84,19 @@ export async function startFoundationServer(
   const transport = new WebSocketTransport({ server: app.server });
   const gameServer = new Server({
     transport,
+    ...(options.publicAddress === undefined
+      ? {}
+      : { publicAddress: options.publicAddress }),
     gracefullyShutdown: false,
     greet: false,
   });
   gameServer.define("privacy_spike", PrivacySpikeRoom);
+  if (developmentPlayTickets) {
+    gameServer.define(
+      ROOM_NAMES.village,
+      createVillageRoom(developmentPlayTickets),
+    );
+  }
   await gameServer.listen(options.port, options.host);
 
   const colyseusListener = app.server

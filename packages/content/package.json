@@ -16,6 +16,10 @@
       "types": "./src/village-map-artifact.d.ts",
       "default": "./dist/artifacts/village-map.js"
     },
+    "./village-map-server": {
+      "types": "./src/village-map-server-artifact.d.ts",
+      "default": "./dist/artifacts/village-map.server.js"
+    },
     "./village-character": {
       "types": "./src/village-character-artifact.d.ts",
       "default": "./dist/artifacts/village-character.js"
