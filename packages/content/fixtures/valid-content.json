@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "definitions": [
+    {
+      "id": "objective:foundation_sample",
+      "tags": ["development"],
+      "references": [],
+      "clientVisible": {
+        "displayName": "Foundation sample"
+      },
+      "serverOnly": {
+        "developmentOnly": true
+      }
+    }
+  ]
+}

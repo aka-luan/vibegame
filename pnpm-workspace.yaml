@@ -1,0 +1,12 @@
+packages:
+  - apps/*
+  - packages/*
+
+minimumReleaseAge: 1440
+
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: false
+
+engineStrict: true
+nodeVersion: 24.18.0

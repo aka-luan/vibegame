@@ -1,0 +1,29 @@
+{
+  "name": "@gameish/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "pnpm --filter @gameish/content build && pnpm --filter @gameish/database build && pnpm --filter @gameish/protocol build && pnpm build && node dist/main.js",
+    "start": "node dist/main.js",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@colyseus/schema": "4.0.27",
+    "@colyseus/ws-transport": "0.17.13",
+    "@gameish/content": "workspace:*",
+    "@gameish/database": "workspace:*",
+    "@gameish/protocol": "workspace:*",
+    "express": "5.2.1",
+    "@colyseus/core": "0.17.42",
+    "fastify": "5.10.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "26.1.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}

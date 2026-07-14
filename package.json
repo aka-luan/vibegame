@@ -1,0 +1,40 @@
+{
+  "name": "gameish",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.10.0",
+  "engines": {
+    "node": "24.18.0",
+    "pnpm": "11.10.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "content:validate": "pnpm --filter @gameish/content validate",
+    "db:down": "docker compose down",
+    "db:generate": "pnpm --filter @gameish/database db:generate",
+    "db:migrate": "pnpm --filter @gameish/database db:migrate",
+    "db:up": "docker compose up -d --wait postgres",
+    "dev": "pnpm --parallel --filter @gameish/server --filter @gameish/web dev",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "test": "vitest run --config vitest.config.ts",
+    "test:e2e": "playwright test",
+    "test:integration": "pnpm --filter @gameish/database build && vitest run --config tests/vitest.integration.config.ts",
+    "test:multiplayer": "vitest run --config tests/vitest.multiplayer.config.ts",
+    "typecheck": "tsc -p tsconfig.json && pnpm -r --if-present typecheck",
+    "validate": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm content:validate"
+  },
+  "devDependencies": {
+    "@colyseus/sdk": "0.17.43",
+    "@eslint/js": "10.0.1",
+    "@gameish/database": "workspace:*",
+    "@playwright/test": "1.61.1",
+    "@types/node": "26.1.1",
+    "eslint": "10.7.0",
+    "prettier": "3.9.5",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.63.0",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "definitions": [
+    {
+      "id": "Foundation Sample",
+      "tags": ["development"],
+      "references": [],
+      "clientVisible": {
+        "displayName": "Invalid sample"
+      },
+      "serverOnly": {
+        "developmentOnly": true
+      }
+    }
+  ]
+}
