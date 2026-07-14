@@ -6,9 +6,12 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
+    "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@gameish/content": "workspace:*",
+    "@gameish/world": "workspace:*",
     "phaser": "4.2.1",
     "react": "19.2.7",
     "react-dom": "19.2.7"

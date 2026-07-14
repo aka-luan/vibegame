@@ -11,12 +11,20 @@
     "./canonical": {
       "types": "./src/canonical.ts",
       "default": "./dist/canonical.js"
+    },
+    "./village-map": {
+      "types": "./src/village-map-artifact.d.ts",
+      "default": "./dist/artifacts/village-map.js"
+    },
+    "./village-character": {
+      "types": "./src/village-character-artifact.d.ts",
+      "default": "./dist/artifacts/village-character.js"
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node dist/compile-canonical-assets.js",
     "typecheck": "tsc -p tsconfig.json",
-    "validate": "tsc -p tsconfig.build.json && node dist/validate-canonical.js"
+    "validate": "pnpm build && node dist/validate-canonical.js"
   },
   "dependencies": {
     "zod": "4.4.3"

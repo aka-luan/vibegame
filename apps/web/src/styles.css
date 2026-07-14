@@ -27,7 +27,7 @@ body,
   display: block;
 }
 
-.foundation-panel {
+.world-panel {
   position: absolute;
   z-index: 10;
   top: 1rem;
@@ -40,12 +40,12 @@ body,
   box-shadow: 0 1rem 2rem rgb(0 0 0 / 25%);
 }
 
-.foundation-panel h1,
-.foundation-panel p {
+.world-panel h1,
+.world-panel p {
   margin: 0 0 0.75rem;
 }
 
-.foundation-panel button {
+.world-panel button {
   min-height: 2.75rem;
   padding: 0.5rem 0.9rem;
   color: #16251c;
@@ -56,7 +56,7 @@ body,
   font-weight: 700;
 }
 
-.foundation-panel button:focus-visible {
+.world-panel button:focus-visible {
   outline: 3px solid #fff4b3;
   outline-offset: 3px;
 }
@@ -67,4 +67,17 @@ body,
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+
+.control-hint,
+.world-status {
+  color: #d7e9ca;
+}
+
+.interaction-hint {
+  padding: 0.45rem 0.6rem;
+  border-left: 0.25rem solid #ffe27a;
+  background: rgb(255 226 122 / 12%);
+  color: #fff4b3;
+  font-weight: 700;
 }

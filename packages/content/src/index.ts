@@ -58,7 +58,7 @@ export interface ContentValidationIssue {
 export type ContentValidationResult =
   { success: true } | { success: false; issues: ContentValidationIssue[] };
 
-function formatPath(path: PropertyKey[]): string {
+export function formatValidationPath(path: PropertyKey[]): string {
   return path.reduce<string>((formatted, segment) => {
     if (typeof segment === "number") {
       return `${formatted}[${String(segment)}]`;
@@ -80,7 +80,7 @@ export function validateContent(input: unknown): ContentValidationResult {
   return {
     success: false,
     issues: result.error.issues.map((issue) => ({
-      path: formatPath(issue.path),
+      path: formatValidationPath(issue.path),
       message: issue.message,
     })),
   };

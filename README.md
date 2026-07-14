@@ -1,9 +1,10 @@
 # Gameish
 
 Gameish is an original browser-first cooperative action RPG. This repository is
-currently at the technical-foundation milestone: it intentionally contains a
-non-game browser shell, one server compatibility room, content validation, and
-local PostgreSQL wiring—no gameplay or durable game tables.
+currently includes its first offline authored-world slice: one validated village
+map, a manifest-driven placeholder character, deterministic movement and
+collision, and a keyboard-accessible React overlay. Networking and durable game
+tables remain later milestones.
 
 ## Prerequisites
 
@@ -53,13 +54,19 @@ placeholder game table.
 
 ## Boundaries proven here
 
-- Phaser owns the responsive world canvas and renders a small Tiled JSON map
-  with the approved layer vocabulary; a sprite is depth-layered within it.
-- React owns the semantic, keyboard-focusable DOM overlay.
+- Phaser owns the responsive world canvas, bounded camera, layered Tiled map,
+  interaction marker, and foot-origin entity ordering.
+- React owns the semantic DOM overlay and explicit focus handoff back to the
+  world canvas.
+- `packages/world` provides pure deterministic movement and collision used by
+  the offline client and available to later server authority.
+- Canonical Tiled and character-manifest sources validate and compile into
+  client-safe rendering/prediction artifacts and separate server geometry.
 - Fastify and Colyseus share one Node HTTP server in one process.
 - Colyseus `StateView` synchronization exposes each player's private sample
   field only to that client while public display fields reach both clients.
-- Canonical content is validated by Zod and invalid fixtures report stable paths.
+- Canonical content, maps, and asset manifests are validated by Zod and invalid
+  inputs report stable paths.
 - PostgreSQL readiness is separate from process health.
 
 See [foundation compatibility evidence](docs/foundation-compatibility.md) for

@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "id": "rig:village_placeholder",
+  "rigVersion": "village-rig-v1",
+  "canvas": {
+    "width": 16,
+    "height": 24
+  },
+  "displayScale": 2,
+  "footOrigin": {
+    "x": 8,
+    "y": 22
+  },
+  "collision": {
+    "offsetX": 0,
+    "offsetY": -3,
+    "width": 10,
+    "height": 7
+  },
+  "facings": {
+    "north": {
+      "row": 0
+    },
+    "south": {
+      "row": 1
+    },
+    "east": {
+      "row": 2
+    },
+    "west": {
+      "mirror": "east"
+    }
+  },
+  "animations": {
+    "idle": {
+      "frames": [0],
+      "frameDurationMs": 180,
+      "loop": true
+    },
+    "walk": {
+      "frames": [0, 1, 2, 1],
+      "frameDurationMs": 130,
+      "loop": true
+    },
+    "attack_basic": {
+      "frames": [0],
+      "frameDurationMs": 180,
+      "loop": true
+    },
+    "ability_1": {
+      "frames": [0],
+      "frameDurationMs": 180,
+      "loop": true
+    },
+    "ability_2": {
+      "frames": [0],
+      "frameDurationMs": 180,
+      "loop": true
+    },
+    "ability_3": {
+      "frames": [0],
+      "frameDurationMs": 180,
+      "loop": true
+    },
+    "ability_4": {
+      "frames": [0],
+      "frameDurationMs": 180,
+      "loop": true
+    },
+    "hit": {
+      "frames": [0],
+      "frameDurationMs": 180,
+      "loop": true
+    },
+    "defeated": {
+      "frames": [0],
+      "frameDurationMs": 180,
+      "loop": false
+    }
+  },
+  "attachments": {
+    "hand": {
+      "x": 12,
+      "y": 14
+    }
+  },
+  "layers": [
+    {
+      "id": "base",
+      "depth": 0,
+      "fallback": null,
+      "source": {
+        "kind": "embedded_png",
+        "dataUri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAABICAYAAACwc3YrAAAAr0lEQVR4nO2XwQnAMAzEsm1X7SYdo13AgRhDlWAd9OdzpVfwGGbDPPf1Rt8pfRxAARpAARqg1J+VV5fQfRxAARpAARpAARpAgWg4taD4kpb/r4AC3QWMMYeflDsAKEADKEADlPqz8uoSuo8DKEADKEADKEADKBANpxbQN7ECCnQXMMYcflLuAKAADaAADVDqz8qrS+g+DqAADaAADaAADaBANJxaQN/ECijQXcD8nA8dEfS1bfm5bQAAAABJRU5ErkJggg==",
+        "frameColumns": 3,
+        "frameRows": 3
+      }
+    },
+    {
+      "id": "tunic",
+      "depth": 1,
+      "fallback": "base",
+      "source": {
+        "kind": "embedded_png",
+        "dataUri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAABICAYAAACwc3YrAAAAhUlEQVR4nO3YwQmAMAwFUDdzHbdwTk+u4AZ60ZugYOsv9D3wZiAfkkM6DABwGudpf/O1Wh9voEiAZVs/NZCsjzcgQHqGi+yAAMkAAABAv9IHiYvs7ue7V4JW6+MNCJCe4So7IMCfAQAAgH6lDxIX2VPh9ULQan28AQHSM1x9BwSoHQCA7hwZgTEhBfgUTAAAAABJRU5ErkJggg==",
+        "frameColumns": 3,
+        "frameRows": 3
+      }
+    }
+  ],
+  "provenance": {
+    "license": "CC0-1.0",
+    "creator": "Gameish project",
+    "source": "Original generated placeholder",
+    "exportTool": "Phaser CanvasTexture",
+    "exportToolVersion": "4.2.1",
+    "rigVersion": "village-rig-v1",
+    "dimensions": "16x24 per frame",
+    "frameArrangement": "manifest rows and frames",
+    "replacementCompatibility": "village-rig-v1"
+  }
+}
