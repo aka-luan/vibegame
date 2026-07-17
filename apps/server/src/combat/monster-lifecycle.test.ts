@@ -8,6 +8,12 @@ import { MonsterLifecycle } from "./monster-lifecycle.js";
 const canonicalCombat = combatCatalogSchema.parse(foundationContent.combat);
 const monster = canonicalCombat.monsters[0]!;
 const encounter = canonicalCombat.encounters[0]!;
+const bossAction = canonicalCombat.monsterActions.find(
+  (action) => action.id === monster.serverOnly.bossActionId,
+)!;
+const rooted = canonicalCombat.statuses.find(
+  (status) => status.id === "status:rooted",
+)!;
 const world = {
   bounds: { x: 0, y: 192, width: 512, height: 192 },
   obstacles: [],
@@ -78,5 +84,52 @@ describe("server monster lifecycle", () => {
     ]);
     expect(lifecycle.state.state).toBe("idle");
     expect(lifecycle.state.health).toBe(monster.serverOnly.maxHealth);
+  });
+
+  it("telegraphs a boss cast and permits an interruptible hit", () => {
+    const lifecycle = new MonsterLifecycle({
+      entityId: "monster:village_mossback:1",
+      monster,
+      encounter,
+      world,
+      rng: () => 0,
+      bossAction,
+    });
+    const target = { id: "player:one", x: 350, y: 256 };
+
+    lifecycle.tick(0, [target]);
+    const telegraph = lifecycle.tick(50, [target]);
+    expect(telegraph).toEqual([
+      {
+        type: "cast_started",
+        targetId: "player:one",
+        abilityId: bossAction.id,
+        startTimeMs: 50,
+        durationMs: bossAction.serverOnly.telegraphDurationMs,
+        interruptible: true,
+      },
+    ]);
+    expect(lifecycle.state.cast?.endsAtMs).toBe(
+      50 + bossAction.serverOnly.castTimeMs,
+    );
+    expect(lifecycle.interrupt()).toEqual({
+      type: "interrupted",
+      abilityId: bossAction.id,
+    });
+    expect(lifecycle.tick(100, [target])).toEqual([]);
+  });
+
+  it("applies a validated root status without allowing movement", () => {
+    const lifecycle = new MonsterLifecycle({
+      entityId: "monster:village_mossback:1",
+      monster,
+      encounter,
+      world,
+      rng: () => 0,
+    });
+    lifecycle.applyStatus(rooted, 0);
+    lifecycle.tick(0, [{ id: "player:one", x: 400, y: 256 }]);
+    lifecycle.tick(50, [{ id: "player:one", x: 400, y: 256 }]);
+    expect(lifecycle.state.x).toBe(encounter.spawn.x);
   });
 });

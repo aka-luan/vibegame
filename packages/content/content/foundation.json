@@ -32,6 +32,12 @@
         "clientVisible": { "displayName": "Trailwarden" },
         "serverOnly": {
           "basicAttackId": "attack:trailward_strike",
+          "abilityIds": [
+            "ability:thorn_arc",
+            "ability:binding_briar",
+            "ability:warding_breath",
+            "ability:disrupting_roar"
+          ],
           "maximumResource": 100,
           "startingResource": 100
         }
@@ -42,14 +48,151 @@
         "id": "attack:trailward_strike",
         "clientVisible": {
           "displayName": "Trailward Strike",
-          "animation": "attack_basic"
+          "animation": "attack_basic",
+          "feedback": "A clean close-range strike."
         },
         "serverOnly": {
           "damage": 18,
           "range": 84,
           "cooldownMs": 600,
           "resourceCost": 10,
-          "actionRateLimitMs": 100
+          "actionRateLimitMs": 100,
+          "castTimeMs": 0,
+          "recoveryMs": 0,
+          "movementLock": "none"
+        }
+      }
+    ],
+    "abilities": [
+      {
+        "id": "ability:thorn_arc",
+        "slot": "ability_1",
+        "clientVisible": {
+          "displayName": "Thorn Arc",
+          "animation": "ability_1",
+          "feedback": "A broad thorn sweep hits hard."
+        },
+        "serverOnly": {
+          "range": 96,
+          "cooldownMs": 1200,
+          "resourceCost": 20,
+          "actionRateLimitMs": 100,
+          "castTimeMs": 0,
+          "recoveryMs": 250,
+          "movementLock": "cast_and_recovery",
+          "effects": [{ "kind": "damage", "amount": 28, "target": "target" }]
+        }
+      },
+      {
+        "id": "ability:binding_briar",
+        "slot": "ability_2",
+        "clientVisible": {
+          "displayName": "Binding Briar",
+          "animation": "ability_2",
+          "feedback": "Roots the target briefly."
+        },
+        "serverOnly": {
+          "range": 110,
+          "cooldownMs": 2200,
+          "resourceCost": 24,
+          "actionRateLimitMs": 100,
+          "castTimeMs": 300,
+          "recoveryMs": 300,
+          "movementLock": "cast_and_recovery",
+          "effects": [
+            { "kind": "damage", "amount": 8, "target": "target" },
+            {
+              "kind": "apply_status",
+              "statusId": "status:rooted",
+              "target": "target"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ability:warding_breath",
+        "slot": "ability_3",
+        "clientVisible": {
+          "displayName": "Warding Breath",
+          "animation": "ability_3",
+          "feedback": "Restores resource while keeping you moving."
+        },
+        "serverOnly": {
+          "range": 110,
+          "cooldownMs": 3000,
+          "resourceCost": 0,
+          "actionRateLimitMs": 100,
+          "castTimeMs": 0,
+          "recoveryMs": 0,
+          "movementLock": "none",
+          "effects": [
+            { "kind": "restore_resource", "amount": 30, "target": "self" }
+          ]
+        }
+      },
+      {
+        "id": "ability:disrupting_roar",
+        "slot": "ability_4",
+        "clientVisible": {
+          "displayName": "Disrupting Roar",
+          "animation": "ability_4",
+          "feedback": "Interrupts a telegraphed cast when allowed."
+        },
+        "serverOnly": {
+          "range": 120,
+          "cooldownMs": 2600,
+          "resourceCost": 30,
+          "actionRateLimitMs": 100,
+          "castTimeMs": 250,
+          "recoveryMs": 350,
+          "movementLock": "cast_and_recovery",
+          "effects": [
+            { "kind": "damage", "amount": 12, "target": "target" },
+            { "kind": "interrupt", "target": "target" }
+          ]
+        }
+      }
+    ],
+    "statuses": [
+      {
+        "id": "status:rooted",
+        "clientVisible": { "displayName": "Rooted" },
+        "serverOnly": {
+          "durationMs": 1200,
+          "controlState": "rooted",
+          "movementMultiplier": 0
+        }
+      },
+      {
+        "id": "status:stunned",
+        "clientVisible": { "displayName": "Stunned" },
+        "serverOnly": {
+          "durationMs": 900,
+          "controlState": "stunned",
+          "movementMultiplier": 0
+        }
+      }
+    ],
+    "monsterActions": [
+      {
+        "id": "monster_action:mossback_splinter_roar",
+        "clientVisible": { "displayName": "Splinter Roar" },
+        "serverOnly": {
+          "damage": 14,
+          "range": 96,
+          "cooldownMs": 2400,
+          "castTimeMs": 600,
+          "telegraphDurationMs": 600,
+          "recoveryMs": 300,
+          "interruptible": true,
+          "effects": [
+            { "kind": "damage", "amount": 14, "target": "target" },
+            {
+              "kind": "apply_status",
+              "statusId": "status:rooted",
+              "target": "target"
+            }
+          ]
         }
       }
     ],
@@ -66,7 +209,9 @@
           "aggroRange": 180,
           "leashRange": 220,
           "respawnMs": 3000,
-          "collision": { "width": 22, "height": 18 }
+          "collision": { "width": 22, "height": 18 },
+          "behaviorProfile": "telegraphed_boss",
+          "bossActionId": "monster_action:mossback_splinter_roar"
         }
       }
     ],

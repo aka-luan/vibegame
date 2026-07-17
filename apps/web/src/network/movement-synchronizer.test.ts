@@ -5,6 +5,7 @@ import {
   MovementSynchronizer,
   RemoteInterpolator,
   ServerTimeEstimator,
+  isTelegraphActive,
 } from "./movement-synchronizer.js";
 
 const integrate = (
@@ -73,6 +74,21 @@ describe("movement synchronization", () => {
 
     expect(remote.sample(1_100)).toEqual({ x: 10, y: 20 });
     expect(remote.sample(1_500)).toEqual({ x: 20, y: 30 });
+  });
+
+  it("renders a telegraph using estimated server time under latency", () => {
+    const clock = new ServerTimeEstimator();
+    clock.observe(5_000, 5_200);
+    const telegraph = {
+      entityId: "monster:boss:1",
+      abilityId: "monster_action:roar",
+      startTimeMs: 5_000,
+      durationMs: 600,
+      interruptible: true,
+    } as const;
+
+    expect(isTelegraphActive(telegraph, clock.serverTimeAt(5_350))).toBe(true);
+    expect(isTelegraphActive(telegraph, clock.serverTimeAt(5_850))).toBe(false);
   });
 
   it("keeps enough remote history to interpolate at a buffered render time", () => {

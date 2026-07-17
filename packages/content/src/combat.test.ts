@@ -11,6 +11,11 @@ describe("combat content validation", () => {
     expect(validateCombatCatalog(canonicalCombat)).toEqual({
       success: true,
     });
+    expect(canonicalCombat.abilities).toHaveLength(4);
+    expect(canonicalCombat.classes[0]?.serverOnly.abilityIds).toHaveLength(4);
+    expect(canonicalCombat.monsters[0]?.serverOnly.behaviorProfile).toBe(
+      "telegraphed_boss",
+    );
   });
 
   it("rejects a missing monster reference from an encounter", () => {
@@ -37,6 +42,7 @@ describe("combat content validation", () => {
     attacks[0]!.clientVisible = {
       displayName: "Trailward Strike",
       animation: "attack_basic",
+      feedback: "A clean close-range strike.",
       damage: 999,
     };
 
@@ -46,6 +52,23 @@ describe("combat content validation", () => {
         {
           path: "attacks[0].clientVisible",
           message: 'Unrecognized key: "damage"',
+        },
+      ],
+    });
+  });
+
+  it("rejects a class with a repeated ability slot", () => {
+    const invalidCatalog = structuredClone(canonicalCombat);
+    invalidCatalog.abilities[1]!.slot = invalidCatalog.abilities[0]!.slot;
+    invalidCatalog.abilities[1]!.clientVisible.animation =
+      invalidCatalog.abilities[0]!.clientVisible.animation;
+
+    expect(validateCombatCatalog(invalidCatalog)).toEqual({
+      success: false,
+      issues: [
+        {
+          path: "abilities[1].slot",
+          message: "Duplicate ability slot: ability_1",
         },
       ],
     });

@@ -31,11 +31,23 @@ export class MovementInput {
   readonly #pressed = new Set<MovementBinding>();
   readonly #canvas: HTMLCanvasElement;
   #basicAttackRequested = false;
+  readonly #abilityRequests = new Set<1 | 2 | 3 | 4>();
 
   readonly #handleKeyDown = (event: KeyboardEvent) => {
     if (event.code === "Digit1") {
       event.preventDefault();
       this.#basicAttackRequested = true;
+      return;
+    }
+    const abilitySlot = {
+      Digit2: 1,
+      Digit3: 2,
+      Digit4: 3,
+      Digit5: 4,
+    }[event.code] as 1 | 2 | 3 | 4 | undefined;
+    if (abilitySlot) {
+      event.preventDefault();
+      this.#abilityRequests.add(abilitySlot);
       return;
     }
     const binding =
@@ -53,7 +65,11 @@ export class MovementInput {
     this.#pressed.delete(binding);
   };
 
-  readonly #clear = () => this.#pressed.clear();
+  readonly #clear = () => {
+    this.#pressed.clear();
+    this.#abilityRequests.clear();
+    this.#basicAttackRequested = false;
+  };
 
   constructor(canvas: HTMLCanvasElement) {
     this.#canvas = canvas;
@@ -78,6 +94,12 @@ export class MovementInput {
     const requested = this.#basicAttackRequested;
     this.#basicAttackRequested = false;
     return requested;
+  }
+
+  consumeAbility(slot: 1 | 2 | 3 | 4): boolean {
+    if (!this.#abilityRequests.has(slot)) return false;
+    this.#abilityRequests.delete(slot);
+    return true;
   }
 
   focus(): void {

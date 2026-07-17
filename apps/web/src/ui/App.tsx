@@ -43,6 +43,12 @@ function requestedSimulatedLatency(): number {
 const basicAttack = villageCombat.attacks.find(
   (attack) => attack.id === villageCombat.classes[0]?.basicAttackId,
 );
+const classDefinition = villageCombat.classes[0];
+const abilitySlots = classDefinition?.abilityIds.map((id, index) => ({
+  id,
+  slot: `ability_${index + 1}` as const,
+  definition: villageCombat.abilities.find((ability) => ability.id === id),
+}));
 
 export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   const renderer = useRef<WorldRenderer | null>(null);
@@ -55,12 +61,25 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   const [simulatedLatencyMs, setSimulatedLatencyMs] = useState(
     requestedSimulatedLatency,
   );
+  const [clockMs, setClockMs] = useState(() => Date.now());
   const [combatSnapshot, setCombatSnapshot] = useState<
     Pick<
       VillagePresenceSnapshot,
-      "monsters" | "selectedTargetEntityId" | "combatResult"
+      | "monsters"
+      | "selectedTargetEntityId"
+      | "combatResult"
+      | "combatState"
+      | "telegraphs"
+      | "serverTimeOffsetMs"
     >
-  >({ monsters: [], selectedTargetEntityId: null, combatResult: undefined });
+  >({
+    monsters: [],
+    selectedTargetEntityId: null,
+    combatResult: undefined,
+    combatState: undefined,
+    telegraphs: [],
+    serverTimeOffsetMs: 0,
+  });
 
   useEffect(() => {
     let active = true;
@@ -82,6 +101,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
             monsters: presenceSnapshot.monsters,
             selectedTargetEntityId: presenceSnapshot.selectedTargetEntityId,
             combatResult: presenceSnapshot.combatResult,
+            combatState: presenceSnapshot.combatState,
+            telegraphs: presenceSnapshot.telegraphs,
+            serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
           });
         });
         renderer.current = createWorldRenderer(
@@ -105,6 +127,34 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       if (connectedPresence) void connectedPresence.close();
     };
   }, [worldRoot]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockMs(Date.now()), 100);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const estimatedServerTimeMs = clockMs + combatSnapshot.serverTimeOffsetMs;
+  const cooldownRemaining = (actionId: string): number =>
+    Math.max(
+      0,
+      (combatSnapshot.combatState?.cooldowns[actionId] ?? 0) -
+        estimatedServerTimeMs,
+    );
+  const actionDisabled = (actionId: string): boolean =>
+    !combatSnapshot.selectedTargetEntityId || cooldownRemaining(actionId) > 0;
+  const combatFeedback = (() => {
+    const result = combatSnapshot.combatResult;
+    if (!result) return undefined;
+    if (!result.accepted) return result.code;
+    const feedback = result.abilityId
+      ? villageCombat.abilities.find(
+          (ability) => ability.id === result.abilityId,
+        )?.feedback
+      : basicAttack?.feedback;
+    return `${feedback ?? "Action resolved."} ${
+      result.defeated ? "Mossback defeated." : `Hit for ${result.damage}.`
+    }`;
+  })();
 
   return (
     <aside className="world-panel" aria-labelledby="world-heading">
@@ -146,13 +196,63 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
         ))}
         {combatSnapshot.combatResult ? (
           <p className="combat-feedback" role="status">
-            {combatSnapshot.combatResult.accepted
-              ? combatSnapshot.combatResult.defeated
-                ? "Mossback defeated."
-                : `Hit for ${combatSnapshot.combatResult.damage}.`
-              : combatSnapshot.combatResult.code}
+            {combatFeedback}
           </p>
         ) : null}
+        <div
+          className="resource-meter"
+          role="progressbar"
+          aria-label="Focus resource"
+          aria-valuemin={0}
+          aria-valuemax={combatSnapshot.combatState?.maximumResource ?? 100}
+          aria-valuenow={combatSnapshot.combatState?.resource ?? 0}
+        >
+          <span>
+            Focus {Math.round(combatSnapshot.combatState?.resource ?? 0)} /
+            {combatSnapshot.combatState?.maximumResource ?? 100}
+          </span>
+          <span
+            className="resource-meter-fill"
+            style={{
+              width: `${((combatSnapshot.combatState?.resource ?? 0) / (combatSnapshot.combatState?.maximumResource ?? 100)) * 100}%`,
+            }}
+          />
+        </div>
+        <div className="hotbar" aria-label="Five-slot action hotbar">
+          <button
+            type="button"
+            className="hotbar-action"
+            disabled={actionDisabled(basicAttack?.id ?? "")}
+            onClick={() => presence.current?.basicAttack()}
+          >
+            <span>1</span>
+            {basicAttack?.displayName ?? "Basic attack"}
+            {cooldownRemaining(basicAttack?.id ?? "") > 0
+              ? ` (${Math.ceil(cooldownRemaining(basicAttack?.id ?? "") / 100) / 10}s)`
+              : null}
+          </button>
+          {abilitySlots?.map(({ id, slot, definition }, index) => (
+            <button
+              type="button"
+              className="hotbar-action"
+              key={id}
+              disabled={actionDisabled(id)}
+              onClick={() => presence.current?.useAbility(id)}
+            >
+              <span>{index + 2}</span>
+              {definition?.displayName ?? slot}
+              {cooldownRemaining(id) > 0
+                ? ` (${Math.ceil(cooldownRemaining(id) / 100) / 10}s)`
+                : null}
+            </button>
+          ))}
+        </div>
+        <p className="combat-state" aria-live="polite">
+          State: {combatSnapshot.combatState?.controlState ?? "normal"}
+          {combatSnapshot.telegraphs.length > 0
+            ? " — incoming telegraph; use Disrupting Roar if it is interruptible."
+            : ""}
+        </p>
       </section>
       <button type="button" onClick={() => renderer.current?.focus()}>
         Return to world

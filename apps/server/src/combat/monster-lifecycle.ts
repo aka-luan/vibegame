@@ -1,10 +1,18 @@
 import type {
   EncounterDefinition,
+  MonsterActionDefinition,
   MonsterDefinition,
+  StatusDefinition,
 } from "@gameish/content/combat";
 import { moveBody, type MovementWorld } from "@gameish/world";
 
 import type { CombatPosition } from "./resolver.js";
+import {
+  applyCombatStatus,
+  combatControlState,
+  expireCombatStatuses,
+  type ActiveCombatStatus,
+} from "./status.js";
 
 export interface MonsterTarget extends CombatPosition {
   id: string;
@@ -12,7 +20,16 @@ export interface MonsterTarget extends CombatPosition {
 
 export type MonsterLifecycleEvent =
   | { type: "aggro"; targetId: string }
-  | { type: "attack"; targetId: string }
+  | {
+      type: "cast_started";
+      targetId: string;
+      abilityId: string;
+      startTimeMs: number;
+      durationMs: number;
+      interruptible: boolean;
+    }
+  | { type: "attack"; targetId: string; abilityId?: string }
+  | { type: "interrupted"; abilityId: string }
   | { type: "defeated" }
   | { type: "respawned" };
 
@@ -23,6 +40,12 @@ export interface MonsterLifecycleState extends CombatPosition {
   targetId: string | null;
   state: "idle" | "chasing" | "leashing" | "attacking" | "defeated";
   attackCooldownEndsAtMs: number;
+  cast: {
+    abilityId: string;
+    targetId: string;
+    endsAtMs: number;
+    interruptible: boolean;
+  } | null;
   respawnAtMs: number | null;
 }
 
@@ -31,6 +54,8 @@ export class MonsterLifecycle {
   readonly #world: MovementWorld;
   readonly #rng: () => number;
   readonly #spawn: CombatPosition;
+  readonly #bossAction: MonsterActionDefinition | undefined;
+  readonly #statuses = new Map<string, ActiveCombatStatus>();
   readonly state: MonsterLifecycleState;
 
   constructor(options: {
@@ -39,11 +64,13 @@ export class MonsterLifecycle {
     encounter: EncounterDefinition;
     world: MovementWorld;
     rng: () => number;
+    bossAction?: MonsterActionDefinition | undefined;
   }) {
     this.#monster = options.monster;
     this.#world = options.world;
     this.#rng = options.rng;
     this.#spawn = { ...options.encounter.spawn };
+    this.#bossAction = options.bossAction;
     this.state = {
       entityId: options.entityId,
       x: options.encounter.spawn.x,
@@ -53,6 +80,7 @@ export class MonsterLifecycle {
       targetId: null,
       state: "idle",
       attackCooldownEndsAtMs: 0,
+      cast: null,
       respawnAtMs: null,
     };
   }
@@ -61,6 +89,7 @@ export class MonsterLifecycle {
     nowMs: number,
     targets: readonly MonsterTarget[],
   ): MonsterLifecycleEvent[] {
+    expireCombatStatuses(this.#statuses, nowMs);
     if (this.state.state === "defeated") {
       if (this.state.respawnAtMs !== null && nowMs >= this.state.respawnAtMs) {
         this.state.x = this.#spawn.x;
@@ -68,6 +97,9 @@ export class MonsterLifecycle {
         this.state.health = this.state.maxHealth;
         this.state.targetId = null;
         this.state.state = "idle";
+        this.state.cast = null;
+        this.state.attackCooldownEndsAtMs = 0;
+        this.#statuses.clear();
         this.state.respawnAtMs = null;
         return [{ type: "respawned" }];
       }
@@ -88,11 +120,13 @@ export class MonsterLifecycle {
       this.state.targetId = null;
       this.state.health = this.state.maxHealth;
       this.state.state = "leashing";
+      this.state.cast = null;
       wasLeashed = true;
     } else if (this.state.targetId && !currentTarget) {
       this.state.targetId = null;
       this.state.health = this.state.maxHealth;
       this.state.state = "leashing";
+      this.state.cast = null;
       wasLeashed = true;
     }
 
@@ -130,7 +164,43 @@ export class MonsterLifecycle {
       (candidate) => candidate.id === this.state.targetId,
     );
     if (target) {
+      if (this.state.cast) {
+        if (nowMs < this.state.cast.endsAtMs) {
+          this.state.state = "attacking";
+          return [];
+        }
+        const abilityId = this.state.cast.abilityId;
+        this.state.cast = null;
+        this.state.attackCooldownEndsAtMs =
+          nowMs + (this.#bossAction?.serverOnly.cooldownMs ?? 0);
+        this.state.state = "attacking";
+        return [{ type: "attack", targetId: target.id, abilityId }];
+      }
       const distance = this.#distance(this.state, target);
+      const bossAction = this.#bossAction;
+      if (
+        bossAction &&
+        distance <= bossAction.serverOnly.range &&
+        nowMs >= this.state.attackCooldownEndsAtMs
+      ) {
+        this.state.cast = {
+          abilityId: bossAction.id,
+          targetId: target.id,
+          endsAtMs: nowMs + bossAction.serverOnly.castTimeMs,
+          interruptible: bossAction.serverOnly.interruptible,
+        };
+        this.state.state = "attacking";
+        return [
+          {
+            type: "cast_started",
+            targetId: target.id,
+            abilityId: bossAction.id,
+            startTimeMs: nowMs,
+            durationMs: bossAction.serverOnly.telegraphDurationMs,
+            interruptible: bossAction.serverOnly.interruptible,
+          },
+        ];
+      }
       if (distance <= this.#monster.serverOnly.attackRange) {
         if (nowMs >= this.state.attackCooldownEndsAtMs) {
           this.state.state = "attacking";
@@ -141,7 +211,11 @@ export class MonsterLifecycle {
         this.state.state = "idle";
         return [];
       }
-      this.#moveTowards(target);
+      if (
+        combatControlState(this.#statuses, this.#statusDefinitions) !== "rooted"
+      ) {
+        this.#moveTowards(target);
+      }
       this.state.state = "chasing";
       return [];
     }
@@ -155,6 +229,15 @@ export class MonsterLifecycle {
       this.state.state = "idle";
     }
     return [];
+  }
+
+  #statusDefinitions: readonly StatusDefinition[] = [];
+
+  applyStatus(definition: StatusDefinition, nowMs: number): ActiveCombatStatus {
+    this.#statusDefinitions = this.#statusDefinitions.includes(definition)
+      ? this.#statusDefinitions
+      : [...this.#statusDefinitions, definition];
+    return applyCombatStatus(this.#statuses, definition, nowMs);
   }
 
   applyDamage(
@@ -172,8 +255,21 @@ export class MonsterLifecycle {
     }
     this.state.state = "defeated";
     this.state.targetId = null;
+    this.state.cast = null;
     this.state.respawnAtMs = nowMs + this.#monster.serverOnly.respawnMs;
     return { type: "defeated" };
+  }
+
+  interrupt(
+    nowMs = 0,
+  ): { type: "interrupted"; abilityId: string } | { type: "not_interrupted" } {
+    if (!this.state.cast?.interruptible) return { type: "not_interrupted" };
+    const abilityId = this.state.cast.abilityId;
+    this.state.cast = null;
+    this.state.attackCooldownEndsAtMs =
+      nowMs + (this.#bossAction?.serverOnly.cooldownMs ?? 0);
+    this.state.state = "chasing";
+    return { type: "interrupted", abilityId };
   }
 
   #moveTowards(target: CombatPosition): void {

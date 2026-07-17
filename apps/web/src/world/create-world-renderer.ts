@@ -1,4 +1,5 @@
 import villageMap from "@gameish/content/village-map";
+import villageCombat from "@gameish/content/village-combat";
 import type { PublicPlayerPresence } from "@gameish/protocol";
 import villageCharacter from "@gameish/content/village-character";
 import { moveCharacterFoot, PLAYER_MOVEMENT } from "@gameish/world";
@@ -17,6 +18,7 @@ import {
   MovementSynchronizer,
   RemoteInterpolator,
   ServerTimeEstimator,
+  isTelegraphActive,
 } from "../network/movement-synchronizer.js";
 
 export interface WorldSnapshot {
@@ -66,6 +68,8 @@ class VillageScene extends Phaser.Scene {
   #input?: MovementInput;
   #unsubscribePresence?: () => void;
   #indicator?: Phaser.GameObjects.Container;
+  #telegraph: Phaser.GameObjects.Container | undefined;
+  #telegraphEndMs = 0;
   #movement?: MovementSynchronizer;
   #latestPresence?: VillagePresenceSnapshot;
   #predictionError = 0;
@@ -165,6 +169,13 @@ class VillageScene extends Phaser.Scene {
     if (this.#input.consumeBasicAttack()) {
       this.#options.presence.basicAttack();
     }
+    const abilityIds = villageCombat.classes[0]?.abilityIds ?? [];
+    for (let slot = 1; slot <= 4; slot += 1) {
+      const abilityId = abilityIds[slot - 1];
+      if (abilityId && this.#input.consumeAbility(slot as 1 | 2 | 3 | 4)) {
+        this.#options.presence.useAbility(abilityId);
+      }
+    }
     if (this.#movement) {
       for (const intention of this.#movement.advance(direction, delta)) {
         this.#options.presence.sendMovement(intention);
@@ -197,6 +208,14 @@ class VillageScene extends Phaser.Scene {
       }
     }
     const renderServerTime = this.#serverClock.serverTimeAt(Date.now()) - 100;
+    if (this.#telegraph) {
+      this.#telegraph.setVisible(renderServerTime < this.#telegraphEndMs);
+      this.#telegraph.setAlpha(
+        renderServerTime < this.#telegraphEndMs
+          ? 0.65 + 0.35 * Math.sin(time / 80) ** 2
+          : 0,
+      );
+    }
     for (const [entityId, interpolator] of this.#remoteMovement) {
       const position = interpolator.sample(renderServerTime);
       if (position) {
@@ -209,6 +228,7 @@ class VillageScene extends Phaser.Scene {
   #applyPresence(snapshot: VillagePresenceSnapshot): void {
     this.#latestPresence = snapshot;
     this.#serverClock.observe(snapshot.serverTimeMs, Date.now());
+    const estimatedServerTime = this.#serverClock.serverTimeAt(Date.now());
     const currentMonsterIds = new Set(
       snapshot.monsters.map((monster) => monster.entityId),
     );
@@ -258,6 +278,44 @@ class VillageScene extends Phaser.Scene {
       monsterDisplay.display.setAlpha(
         monster.animation === "defeated" ? 0.45 : 1,
       );
+    }
+    const telegraph = snapshot.telegraphs.find(
+      (candidate) =>
+        candidate.entityId === snapshot.monsters[0]?.entityId &&
+        isTelegraphActive(candidate, estimatedServerTime),
+    );
+    if (telegraph) {
+      const monster = snapshot.monsters.find(
+        (candidate) => candidate.entityId === telegraph.entityId,
+      );
+      if (monster) {
+        if (!this.#telegraph) {
+          const ring = this.add
+            .circle(0, 0, 24, 0xe46d5c, 0.15)
+            .setStrokeStyle(3, 0xff8c69);
+          const label = this.add
+            .text(0, -34, "TELEGRAPH", {
+              color: "#fff4b3",
+              backgroundColor: "#7f3029",
+              fontFamily: "system-ui, sans-serif",
+              fontSize: "7px",
+              fontStyle: "bold",
+              padding: { x: 2, y: 1 },
+            })
+            .setOrigin(0.5, 1);
+          this.#telegraph = this.add.container(monster.x, monster.y, [
+            ring,
+            label,
+          ]);
+          this.#telegraph.setDepth(5);
+        }
+        this.#telegraph.setPosition(monster.x, monster.y);
+        this.#telegraphEndMs = telegraph.startTimeMs + telegraph.durationMs;
+        this.game.canvas.dataset.telegraphActive = "true";
+      }
+    } else {
+      this.#telegraphEndMs = 0;
+      this.game.canvas.dataset.telegraphActive = "false";
     }
     const currentIds = new Set(
       snapshot.players.map((player) => player.entityId),
@@ -364,6 +422,8 @@ class VillageScene extends Phaser.Scene {
       monsterDisplay.display.destroy(true);
     }
     this.#monsterDisplays.clear();
+    this.#telegraph?.destroy(true);
+    this.#telegraph = undefined;
     this.#characters.clear();
   }
 }

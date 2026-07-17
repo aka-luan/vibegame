@@ -1,4 +1,7 @@
-import type { MovementIntention } from "@gameish/protocol";
+import type {
+  CombatTelegraphMessage,
+  MovementIntention,
+} from "@gameish/protocol";
 
 interface Point {
   x: number;
@@ -106,6 +109,16 @@ export class ServerTimeEstimator {
   serverTimeAt(clientTimeMs: number): number {
     return clientTimeMs + this.offsetMs;
   }
+}
+
+export function isTelegraphActive(
+  telegraph: CombatTelegraphMessage,
+  estimatedServerTimeMs: number,
+): boolean {
+  return (
+    estimatedServerTimeMs >= telegraph.startTimeMs &&
+    estimatedServerTimeMs < telegraph.startTimeMs + telegraph.durationMs
+  );
 }
 
 interface TimedPoint extends Point {

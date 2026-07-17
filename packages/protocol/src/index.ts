@@ -12,6 +12,9 @@ export const ERROR_CODES = {
   actionOnCooldown: "ABILITY_ON_COOLDOWN",
   insufficientResource: "INSUFFICIENT_RESOURCE",
   actionRateLimited: "ACTION_RATE_LIMITED",
+  abilityNotFound: "ABILITY_NOT_FOUND",
+  staleAction: "STALE_ACTION",
+  actionInterrupted: "ACTION_INTERRUPTED",
   invalidPlayTicket: "INVALID_PLAY_TICKET",
   playTicketExpired: "PLAY_TICKET_EXPIRED",
   playTicketReplayed: "PLAY_TICKET_REPLAYED",
@@ -27,6 +30,7 @@ export const CLIENT_MESSAGES = {
   movement: "movement",
   targetSelection: "target_selection",
   basicAttack: "basic_attack",
+  ability: "ability",
 } as const;
 
 export const SERVER_MESSAGES = {
@@ -37,6 +41,8 @@ export const SERVER_MESSAGES = {
   combatRejected: "combat_rejected",
   combatEvent: "combat_event",
   damageTaken: "damage_taken",
+  combatState: "combat_state",
+  combatTelegraph: "combat_telegraph",
 } as const;
 
 export interface MovementIntention {
@@ -77,6 +83,12 @@ export interface BasicAttackIntention {
   targetEntityId: string;
 }
 
+export interface AbilityIntention {
+  actionId: string;
+  abilityId: string;
+  targetEntityId: string;
+}
+
 export type PublicMonsterAnimation =
   "idle" | "walk" | "attack" | "hit" | "defeated";
 
@@ -90,7 +102,15 @@ export interface PublicMonsterPresence {
 }
 
 export interface CombatPublicEvent {
-  kind: "spawned" | "aggro" | "hit" | "defeated" | "respawned" | "attack";
+  kind:
+    | "spawned"
+    | "aggro"
+    | "hit"
+    | "defeated"
+    | "respawned"
+    | "attack"
+    | "cast_started"
+    | "interrupted";
   entityId: string;
   healthFraction?: number;
 }
@@ -107,6 +127,10 @@ export interface CombatResultAccepted {
   remainingResource: number;
   cooldownEndsAtMs: number;
   defeated: boolean;
+  abilityId?: string;
+  slot?: "basic" | "ability_1" | "ability_2" | "ability_3" | "ability_4";
+  effects?: CombatEffectFeedback[];
+  movementLockedUntilMs?: number;
 }
 
 export interface CombatResultRejected {
@@ -120,4 +144,30 @@ export type CombatResult = CombatResultAccepted | CombatResultRejected;
 export interface DamageTakenMessage {
   amount: number;
   remainingHealth: number;
+}
+
+export type CombatControlState = "normal" | "rooted" | "stunned" | "casting";
+
+export interface CombatStateMessage {
+  serverTimeMs: number;
+  resource: number;
+  maximumResource: number;
+  cooldowns: Record<string, number>;
+  movementLockedUntilMs: number;
+  controlState: CombatControlState;
+  statuses: string[];
+}
+
+export type CombatEffectFeedback =
+  | { kind: "damage"; amount: number }
+  | { kind: "status"; statusId: string; durationMs: number }
+  | { kind: "resource"; amount: number }
+  | { kind: "interrupt" };
+
+export interface CombatTelegraphMessage {
+  entityId: string;
+  abilityId: string;
+  startTimeMs: number;
+  durationMs: number;
+  interruptible: boolean;
 }

@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import foundationContent from "../../../../packages/content/content/foundation.json" with { type: "json" };
 import { combatCatalogSchema } from "@gameish/content/combat";
 
-import { resolveBasicAttack } from "./resolver.js";
+import { resolveAbility, resolveBasicAttack } from "./resolver.js";
 
-const attack = combatCatalogSchema.parse(foundationContent.combat).attacks[0]!;
+const canonicalCombat = combatCatalogSchema.parse(foundationContent.combat);
+const attack = canonicalCombat.attacks[0]!;
+const abilities = canonicalCombat.abilities;
 const baseRequest = {
   nowMs: 10_000,
   lastActionAtMs: undefined,
@@ -72,5 +74,78 @@ describe("basic attack resolver", () => {
       cooldownEndsAtMs: 10_000 + attack.serverOnly.cooldownMs,
       defeated: true,
     });
+  });
+});
+
+describe("ability resolver", () => {
+  it("keeps all four approved abilities distinct and server timed", () => {
+    const results = abilities.map((ability) =>
+      resolveAbility({
+        nowMs: 10_000,
+        lastActionAtMs: undefined,
+        cooldownEndsAtMs: 0,
+        attacker: { x: 100, y: 100, resource: 100, defeated: false },
+        target: {
+          x: 150,
+          y: 100,
+          health: 100,
+          maxHealth: 100,
+          defeated: false,
+        },
+        ability,
+      }),
+    );
+
+    expect(new Set(abilities.map((ability) => ability.slot)).size).toBe(4);
+    expect(results.map((result) => result.accepted)).toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
+    expect(results[1]).toMatchObject({
+      accepted: true,
+      castEndsAtMs: 10_300,
+      movementLockedUntilMs: 10_600,
+    });
+    expect(results[2]).toMatchObject({
+      accepted: true,
+      damage: 0,
+      movementLockedUntilMs: 10_000,
+    });
+  });
+
+  it.each([
+    ["cooldown", { cooldownEndsAtMs: 10_001 }, "ABILITY_ON_COOLDOWN"],
+    [
+      "resource",
+      { attacker: { x: 100, y: 100, resource: 1, defeated: false } },
+      "INSUFFICIENT_RESOURCE",
+    ],
+    [
+      "range",
+      {
+        target: {
+          x: 500,
+          y: 100,
+          health: 100,
+          maxHealth: 100,
+          defeated: false,
+        },
+      },
+      "TARGET_OUT_OF_RANGE",
+    ],
+  ])("rejects an ability when %s", (_label, overrides, code) => {
+    const ability = abilities[0]!;
+    const result = resolveAbility({
+      nowMs: 10_000,
+      lastActionAtMs: undefined,
+      cooldownEndsAtMs: 0,
+      attacker: { x: 100, y: 100, resource: 100, defeated: false },
+      target: { x: 150, y: 100, health: 100, maxHealth: 100, defeated: false },
+      ability,
+      ...overrides,
+    });
+    expect(result).toEqual({ accepted: false, code });
   });
 });

@@ -6,12 +6,15 @@ import {
   ROOM_NAMES,
   SERVER_MESSAGES,
   type AuthoritativeMovementSnapshot,
+  type CombatStateMessage,
+  type CombatTelegraphMessage,
   type CombatResult,
   type ErrorCode,
   type MovementIntention,
   type PublicMonsterPresence,
   type PublicPlayerPresence,
 } from "@gameish/protocol";
+import { ServerTimeEstimator } from "./movement-synchronizer.js";
 
 const errorCodeSchema = z.enum(
   Object.values(ERROR_CODES) as [ErrorCode, ...ErrorCode[]],
@@ -27,6 +30,20 @@ const authoritativeMovementSchema = z
 const targetSelectedSchema = z
   .object({ targetEntityId: z.string().min(1).max(80) })
   .strict();
+const effectFeedbackSchema = z.discriminatedUnion("kind", [
+  z
+    .object({ kind: z.literal("damage"), amount: z.number().nonnegative() })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("status"),
+      statusId: z.string(),
+      durationMs: z.number().nonnegative(),
+    })
+    .strict(),
+  z.object({ kind: z.literal("resource"), amount: z.number() }).strict(),
+  z.object({ kind: z.literal("interrupt") }).strict(),
+]);
 const combatResultSchema = z.discriminatedUnion("accepted", [
   z
     .object({
@@ -37,6 +54,12 @@ const combatResultSchema = z.discriminatedUnion("accepted", [
       remainingResource: z.number().nonnegative(),
       cooldownEndsAtMs: z.number().finite(),
       defeated: z.boolean(),
+      abilityId: z.string().optional(),
+      slot: z
+        .enum(["basic", "ability_1", "ability_2", "ability_3", "ability_4"])
+        .optional(),
+      effects: z.array(effectFeedbackSchema).optional(),
+      movementLockedUntilMs: z.number().finite().optional(),
     })
     .strict(),
   z
@@ -56,9 +79,31 @@ const combatEventSchema = z
       "defeated",
       "respawned",
       "attack",
+      "cast_started",
+      "interrupted",
     ]),
     entityId: z.string(),
     healthFraction: z.number().min(0).max(1).optional(),
+  })
+  .strict();
+const combatStateSchema = z
+  .object({
+    serverTimeMs: z.number().finite(),
+    resource: z.number().nonnegative(),
+    maximumResource: z.number().positive(),
+    cooldowns: z.record(z.string(), z.number().finite()),
+    movementLockedUntilMs: z.number().finite(),
+    controlState: z.enum(["normal", "rooted", "stunned", "casting"]),
+    statuses: z.array(z.string()),
+  })
+  .strict();
+const combatTelegraphSchema = z
+  .object({
+    entityId: z.string(),
+    abilityId: z.string(),
+    startTimeMs: z.number().finite(),
+    durationMs: z.number().positive(),
+    interruptible: z.boolean(),
   })
   .strict();
 
@@ -90,6 +135,9 @@ export interface VillagePresenceSnapshot {
   monsters: readonly PublicMonsterPresence[];
   selectedTargetEntityId: string | null;
   combatResult: CombatResult | undefined;
+  combatState: CombatStateMessage | undefined;
+  telegraphs: readonly CombatTelegraphMessage[];
+  serverTimeOffsetMs: number;
 }
 
 export interface VillagePresence {
@@ -98,6 +146,7 @@ export interface VillagePresence {
   sendMovement(intention: MovementIntention): void;
   selectTarget(targetEntityId: string): void;
   basicAttack(): void;
+  useAbility(abilityId: string): void;
   setSimulatedLatency(latencyMs: number): void;
   subscribe(listener: (snapshot: VillagePresenceSnapshot) => void): () => void;
   close(): Promise<void>;
@@ -129,6 +178,10 @@ export async function connectDevelopmentVillage(
   let localMovement: AuthoritativeMovementSnapshot | undefined;
   let selectedTargetEntityId: string | null = null;
   let combatResult: CombatResult | undefined;
+  let combatState: CombatStateMessage | undefined;
+  let telegraphs: CombatTelegraphMessage[] = [];
+  let serverTimeOffsetMs = 0;
+  const serverClock = new ServerTimeEstimator();
 
   room.reconnection.minUptime = 0;
   room.reconnection.minDelay = 100;
@@ -151,6 +204,8 @@ export async function connectDevelopmentVillage(
   };
 
   const publish = (state: VillageRoomState) => {
+    serverClock.observe(state.serverTimeMs, Date.now());
+    serverTimeOffsetMs = serverClock.offsetMs;
     const players: PublicPlayerPresence[] = [];
     state.players?.forEach((player, entityId) => {
       players.push({
@@ -187,6 +242,9 @@ export async function connectDevelopmentVillage(
       monsters,
       selectedTargetEntityId,
       combatResult,
+      combatState,
+      telegraphs,
+      serverTimeOffsetMs,
     };
     afterNetworkDelay(() => {
       for (const listener of listeners) listener(snapshot);
@@ -211,9 +269,33 @@ export async function connectDevelopmentVillage(
   room.onMessage<unknown>(SERVER_MESSAGES.combatResult, (unsafeResult) => {
     const result = combatResultSchema.safeParse(unsafeResult);
     if (!result.success) return;
-    combatResult = result.data;
+    combatResult = result.data as CombatResult;
     publish(room.state);
   });
+  room.onMessage<unknown>(SERVER_MESSAGES.combatState, (unsafeState) => {
+    const state = combatStateSchema.safeParse(unsafeState);
+    if (!state.success) return;
+    combatState = state.data;
+    serverClock.observe(state.data.serverTimeMs, Date.now());
+    publish(room.state);
+  });
+  room.onMessage<unknown>(
+    SERVER_MESSAGES.combatTelegraph,
+    (unsafeTelegraph) => {
+      const telegraph = combatTelegraphSchema.safeParse(unsafeTelegraph);
+      if (!telegraph.success) return;
+      telegraphs = [
+        ...telegraphs.filter(
+          (candidate) =>
+            candidate.startTimeMs + candidate.durationMs >
+            telegraph.data.startTimeMs,
+        ),
+        telegraph.data,
+      ];
+      serverClock.observe(room.state.serverTimeMs, Date.now());
+      publish(room.state);
+    },
+  );
   room.onMessage<unknown>(SERVER_MESSAGES.combatRejected, (unsafeRejection) => {
     const rejection = z
       .object({ code: errorCodeSchema })
@@ -263,6 +345,17 @@ export async function connectDevelopmentVillage(
       afterNetworkDelay(() =>
         room.send(CLIENT_MESSAGES.basicAttack, {
           actionId: crypto.randomUUID(),
+          targetEntityId,
+        }),
+      );
+    },
+    useAbility(abilityId) {
+      if (!selectedTargetEntityId) return;
+      const targetEntityId = selectedTargetEntityId;
+      afterNetworkDelay(() =>
+        room.send(CLIENT_MESSAGES.ability, {
+          actionId: crypto.randomUUID(),
+          abilityId,
           targetEntityId,
         }),
       );

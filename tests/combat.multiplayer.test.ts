@@ -223,4 +223,123 @@ describe("authoritative combat room boundary", () => {
       { timeout: 5_000, interval: 20 },
     );
   });
+
+  it("runs all four server-authoritative abilities with private cooldown state and public telegraphs", async () => {
+    const endpoint = await startDevelopmentServer();
+    const player = await joinVillage(endpoint, "Ability Ranger");
+    const observer = await joinVillage(endpoint, "Telegraph Witness");
+    const targetEntityId = monsterId(player);
+    const results: CombatResult[] = [];
+    const observerResults: CombatResult[] = [];
+    const states: unknown[] = [];
+    const telegraphs: unknown[] = [];
+    player.onMessage<CombatResult>(SERVER_MESSAGES.combatResult, (result) =>
+      results.push(result),
+    );
+    player.onMessage(SERVER_MESSAGES.combatState, (state) =>
+      states.push(state),
+    );
+    observer.onMessage<CombatResult>(SERVER_MESSAGES.combatResult, (result) =>
+      observerResults.push(result),
+    );
+    observer.onMessage(SERVER_MESSAGES.combatTelegraph, (telegraph) =>
+      telegraphs.push(telegraph),
+    );
+
+    player.send(CLIENT_MESSAGES.targetSelection, { targetEntityId });
+    await vi.waitFor(
+      () => {
+        const state = JSON.parse(JSON.stringify(player.state)) as {
+          players: Record<string, { x: number; y: number }>;
+          monsters: Record<string, { x: number; y: number }>;
+        };
+        const local = state.players[player.sessionId];
+        const monster = state.monsters[targetEntityId];
+        expect(local).toBeDefined();
+        expect(monster).toBeDefined();
+        expect(
+          Math.hypot(local!.x - monster!.x, local!.y - monster!.y),
+        ).toBeLessThanOrEqual(80);
+      },
+      { timeout: 5_000, interval: 20 },
+    );
+
+    player.send(CLIENT_MESSAGES.ability, {
+      actionId: "unknown-ability",
+      abilityId: "ability:stale-client-action",
+      targetEntityId,
+    });
+    await vi.waitFor(() =>
+      expect(results).toContainEqual({
+        accepted: false,
+        actionId: "unknown-ability",
+        code: ERROR_CODES.abilityNotFound,
+      }),
+    );
+
+    const abilityIds = [
+      "ability:thorn_arc",
+      "ability:binding_briar",
+      "ability:warding_breath",
+      "ability:disrupting_roar",
+    ];
+    for (const [index, abilityId] of abilityIds.entries()) {
+      const actionId = `ability-${String(index)}`;
+      player.send(CLIENT_MESSAGES.ability, {
+        actionId,
+        abilityId,
+        targetEntityId,
+      });
+      await vi.waitFor(
+        () =>
+          expect(
+            results.some(
+              (result) => result.accepted && result.actionId === actionId,
+            ),
+          ).toBe(true),
+        { timeout: 2_000, interval: 20 },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+
+    observer.send(CLIENT_MESSAGES.targetSelection, { targetEntityId });
+    observer.send(CLIENT_MESSAGES.ability, {
+      actionId: "cooperative-thorn-arc",
+      abilityId: "ability:thorn_arc",
+      targetEntityId,
+    });
+    await vi.waitFor(() =>
+      expect(observerResults).toContainEqual(
+        expect.objectContaining({
+          accepted: true,
+          actionId: "cooperative-thorn-arc",
+          abilityId: "ability:thorn_arc",
+        }),
+      ),
+    );
+
+    player.send(CLIENT_MESSAGES.ability, {
+      actionId: "ability-3",
+      abilityId: "ability:warding_breath",
+      targetEntityId,
+    });
+    await vi.waitFor(() =>
+      expect(results).toContainEqual({
+        accepted: false,
+        actionId: "ability-3",
+        code: ERROR_CODES.staleAction,
+      }),
+    );
+    expect(states.length).toBeGreaterThan(0);
+    await vi.waitFor(() => expect(telegraphs.length).toBeGreaterThan(0), {
+      timeout: 5_000,
+      interval: 20,
+    });
+    expect(JSON.stringify(observer.state)).not.toContain("cooldowns");
+    expect(telegraphs[0]).toMatchObject({
+      abilityId: "monster_action:mossback_splinter_roar",
+      durationMs: 600,
+      interruptible: true,
+    });
+  });
 });
