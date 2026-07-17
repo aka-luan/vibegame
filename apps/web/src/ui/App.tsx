@@ -13,7 +13,7 @@ import {
 const initialSnapshot: WorldSnapshot = {
   x: 128,
   y: 224,
-  facing: "south",
+  facing: "east",
   state: "idle",
   interaction: null,
   publicPlayerCount: 0,

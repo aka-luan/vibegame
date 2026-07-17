@@ -13,9 +13,17 @@ test("two browser contexts see each other in the village", async ({
     second.goto("/?name=Second%20Ranger"),
   ]);
 
+  // When run as part of the full suite, foundation-shell.spec.ts's page can
+  // still occupy the server's 5s reconnect grace when this test starts, so
+  // the room may briefly report 3 players before it drops back to 2. Give
+  // this initial wait more room than the default 5s timeout.
   await Promise.all([
-    expect(first.getByText("2 players connected")).toBeVisible(),
-    expect(second.getByText("2 players connected")).toBeVisible(),
+    expect(first.getByText("2 players connected")).toBeVisible({
+      timeout: 15_000,
+    }),
+    expect(second.getByText("2 players connected")).toBeVisible({
+      timeout: 15_000,
+    }),
   ]);
   await expect(first.locator("#world-root canvas")).toHaveAttribute(
     "data-public-player-count",
@@ -77,9 +85,17 @@ test("two-player presence survives a short browser interruption", async ({
     reconnecting.goto("/?name=Returning%20Ranger&latency=200"),
     observer.goto("/?name=Patient%20Ranger"),
   ]);
+  // The previous test's contexts can still occupy the server's 5s
+  // reconnect grace when this test starts (serial run), so the room may
+  // briefly report 4 players before it drops back to 2. Give this initial
+  // wait more room than the default 5s timeout.
   await Promise.all([
-    expect(reconnecting.getByText("2 players connected")).toBeVisible(),
-    expect(observer.getByText("2 players connected")).toBeVisible(),
+    expect(reconnecting.getByText("2 players connected")).toBeVisible({
+      timeout: 15_000,
+    }),
+    expect(observer.getByText("2 players connected")).toBeVisible({
+      timeout: 15_000,
+    }),
   ]);
 
   await reconnectingContext.setOffline(true);

@@ -24,8 +24,6 @@ function validManifest() {
     footOrigin: { x: 8, y: 22 },
     collision: { offsetX: 0, offsetY: -3, width: 10, height: 7 },
     facings: {
-      north: { row: 0 },
-      south: { row: 1 },
       east: { row: 2 },
       west: { mirror: "east" },
     },
@@ -79,7 +77,7 @@ function validManifest() {
 }
 
 describe("character manifest validation", () => {
-  it("accepts the canonical four-facing manifest with every required state", () => {
+  it("accepts the canonical two-facing manifest with every required state", () => {
     expect(validateCharacterManifest(validManifest())).toEqual({
       success: true,
     });

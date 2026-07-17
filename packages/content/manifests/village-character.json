@@ -18,12 +18,6 @@
     "height": 7
   },
   "facings": {
-    "north": {
-      "row": 0
-    },
-    "south": {
-      "row": 1
-    },
     "east": {
       "row": 2
     },

@@ -170,6 +170,20 @@ function rectanglesOverlap(
   );
 }
 
+function boundingBox(
+  rectangles: { x: number; y: number; width: number; height: number }[],
+): { x: number; y: number; width: number; height: number } {
+  const minX = Math.min(...rectangles.map((rectangle) => rectangle.x));
+  const minY = Math.min(...rectangles.map((rectangle) => rectangle.y));
+  const maxX = Math.max(
+    ...rectangles.map((rectangle) => rectangle.x + rectangle.width),
+  );
+  const maxY = Math.max(
+    ...rectangles.map((rectangle) => rectangle.y + rectangle.height),
+  );
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
 export function compileTiledMap(
   mapId: string,
   contentVersion: string,
@@ -339,6 +353,17 @@ export function compileTiledMap(
   }
   const collisionObjects = objectLayer("collision").objects;
   const navigationObjects = objectLayer("navigation").objects;
+  if (navigationObjects.length === 0) {
+    return {
+      success: false,
+      issues: [
+        {
+          path: "layers.navigation",
+          message: "At least one navigation rectangle is required",
+        },
+      ],
+    };
+  }
   for (const [index, spawn] of spawns.entries()) {
     const spawnBody = {
       x: spawn.x + playerCollision.offsetX - playerCollision.width / 2,
@@ -440,7 +465,7 @@ export function compileTiledMap(
   const interactions = objectLayer("interactives").objects;
   const rectangles = (layer: ObjectLayer) =>
     layer.objects.map(({ x, y, width, height }) => ({ x, y, width, height }));
-  const bounds = { x: 0, y: 0, width: mapPixelWidth, height: mapPixelHeight };
+  const bounds = boundingBox(rectangles(objectLayer("navigation")));
   const client: ClientMapArtifact = {
     contentVersion,
     id: mapId,

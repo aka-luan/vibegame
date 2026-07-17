@@ -35,6 +35,28 @@ The server refuses to start if development login is enabled with
 `NODE_ENV=production`. Internal room identity is shown only inside the separately
 gated development inspection panel; normal UI and synchronized state omit it.
 
+### Development latency and short recovery
+
+The development inspection panel includes a 0–500 ms simulated round-trip
+latency control plus prediction-error and server-time-offset diagnostics. These
+controls are available only when the development-login build gate is enabled;
+they cannot activate in a production-mode build.
+
+An unexpected room connection loss reserves the existing live entity for five
+seconds. The browser retries after 100 ms with bounded backoff up to 500 ms and
+buffers at most 120 fixed-step intentions. A successful retry keeps the same
+ephemeral entity and receives a fresh targeted authoritative movement snapshot.
+If the grace expires, the server removes the entity and its pending intentions;
+cross-room and long logical-location recovery remain later milestones. The
+server emits structured `disconnected`, `reconnected`, and `removed` lifecycle
+events without room, session, user, or character identifiers.
+
+Run the opt-in ten-minute two-client latency check with
+`RUN_LATENCY_SOAK=true pnpm test:multiplayer`. It alternates movement at 200 ms
+round-trip latency and fails on growing prediction error, authoritative
+divergence, or a stale observer entity. The normal multiplayer lane omits this
+wall-clock soak.
+
 Stop local PostgreSQL with `pnpm db:down`. The Compose volume is persistent;
 `docker compose down -v` is intentionally not scripted because it deletes the
 disposable database.

@@ -39,8 +39,6 @@ export const characterManifestSchema = z
       height: z.number().positive(),
     }),
     facings: z.object({
-      north: z.object({ row: z.number().int().nonnegative() }),
-      south: z.object({ row: z.number().int().nonnegative() }),
       east: z.object({ row: z.number().int().nonnegative() }),
       west: z.union([
         z.object({ row: z.number().int().nonnegative() }),

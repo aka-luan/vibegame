@@ -100,6 +100,9 @@ export async function startFoundationServer(
         ...(options.reconnectGraceSeconds === undefined
           ? {}
           : { reconnectGraceSeconds: options.reconnectGraceSeconds }),
+        recordLifecycle(event) {
+          app.log.info({ event }, "Village connection lifecycle changed");
+        },
       }),
     );
   }

@@ -95,6 +95,7 @@ export class ServerTimeEstimator {
   }
 
   observe(serverTimeMs: number, receivedAtMs: number): void {
+    if (!Number.isFinite(serverTimeMs) || serverTimeMs <= 0) return;
     const sample = serverTimeMs - receivedAtMs;
     this.#offsetMs =
       this.#offsetMs === undefined
@@ -112,29 +113,34 @@ interface TimedPoint extends Point {
 }
 
 export class RemoteInterpolator {
-  #previous: TimedPoint | undefined;
-  #latest: TimedPoint | undefined;
+  readonly #history: TimedPoint[] = [];
 
   push(position: Point, serverTimeMs: number): void {
-    if (this.#latest && serverTimeMs <= this.#latest.serverTimeMs) return;
-    this.#previous = this.#latest;
-    this.#latest = { ...position, serverTimeMs };
+    const latest = this.#history.at(-1);
+    if (latest && serverTimeMs <= latest.serverTimeMs) return;
+    this.#history.push({ ...position, serverTimeMs });
+    if (this.#history.length > 20) this.#history.shift();
   }
 
   sample(serverTimeMs: number): Point | undefined {
-    if (!this.#latest) return undefined;
-    if (!this.#previous || serverTimeMs >= this.#latest.serverTimeMs) {
-      return { x: this.#latest.x, y: this.#latest.y };
-    }
-    if (serverTimeMs <= this.#previous.serverTimeMs) {
-      return { x: this.#previous.x, y: this.#previous.y };
-    }
+    const first = this.#history[0];
+    const latest = this.#history.at(-1);
+    if (!first || !latest) return undefined;
+    if (serverTimeMs <= first.serverTimeMs) return { x: first.x, y: first.y };
+    if (serverTimeMs >= latest.serverTimeMs)
+      return { x: latest.x, y: latest.y };
+    const latestIndex = this.#history.findIndex(
+      (point) => point.serverTimeMs >= serverTimeMs,
+    );
+    const previous = this.#history[latestIndex - 1];
+    const next = this.#history[latestIndex];
+    if (!previous || !next) return { x: latest.x, y: latest.y };
     const progress =
-      (serverTimeMs - this.#previous.serverTimeMs) /
-      (this.#latest.serverTimeMs - this.#previous.serverTimeMs);
+      (serverTimeMs - previous.serverTimeMs) /
+      (next.serverTimeMs - previous.serverTimeMs);
     return {
-      x: this.#previous.x + (this.#latest.x - this.#previous.x) * progress,
-      y: this.#previous.y + (this.#latest.y - this.#previous.y) * progress,
+      x: previous.x + (next.x - previous.x) * progress,
+      y: previous.y + (next.y - previous.y) * progress,
     };
   }
 }

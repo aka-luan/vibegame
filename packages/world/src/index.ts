@@ -22,6 +22,27 @@ export interface MovementRequest {
   world: MovementWorld;
 }
 
+export const PLAYER_MOVEMENT = {
+  fixedStepMs: 50,
+  speed: 92,
+} as const;
+
+export interface CharacterCollisionBody {
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+export interface CharacterMovementRequest {
+  footPosition: Point;
+  direction: Point;
+  speed: number;
+  elapsedMs: number;
+  collision: CharacterCollisionBody;
+  world: MovementWorld;
+}
+
 function rangesOverlap(
   firstStart: number,
   firstEnd: number,
@@ -138,4 +159,25 @@ export function moveBody(request: MovementRequest): Point {
     remainingMs -= elapsedMs;
   }
   return position;
+}
+
+export function moveCharacterFoot(request: CharacterMovementRequest): Point {
+  const moved = moveBody({
+    position: {
+      x: request.footPosition.x + request.collision.offsetX,
+      y: request.footPosition.y + request.collision.offsetY,
+    },
+    direction: request.direction,
+    speed: request.speed,
+    elapsedMs: request.elapsedMs,
+    body: {
+      width: request.collision.width,
+      height: request.collision.height,
+    },
+    world: request.world,
+  });
+  return {
+    x: moved.x - request.collision.offsetX,
+    y: moved.y - request.collision.offsetY,
+  };
 }

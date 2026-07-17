@@ -1,6 +1,7 @@
 import { Client, type Room } from "@colyseus/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { MovementSynchronizer } from "../apps/web/src/network/movement-synchronizer.js";
 import {
   startFoundationServer,
   type RunningFoundationServer,
@@ -12,6 +13,7 @@ import {
   SERVER_MESSAGES,
   type AuthoritativeMovementSnapshot,
 } from "../packages/protocol/src/index.js";
+import { moveBody, PLAYER_MOVEMENT } from "../packages/world/src/index.js";
 
 let runningServer: RunningFoundationServer | undefined;
 const joinedRooms: Room[] = [];
@@ -154,7 +156,7 @@ describe("village public presence", () => {
         expect(state).toContain("First Ranger");
         expect(state).toContain("Second Ranger");
         expect(state).toContain("rig:village_placeholder");
-        expect(state).toContain('"facing":"south"');
+        expect(state).toContain('"facing":"east"');
         expect(state).toContain('"animation":"idle"');
         expect(state).not.toMatch(/userId|characterId|roomId|ticket/i);
         expect(state).not.toContain("lastProcessedSequence");
@@ -217,12 +219,32 @@ describe("village public presence", () => {
       const endpoint = await startDevelopmentServer();
       const player = await joinVillage(endpoint, "Latency Ranger");
       const observer = await joinVillage(endpoint, "Latency Observer");
+      const prediction = new MovementSynchronizer({
+        initialPosition: { x: 128, y: 224 },
+        fixedStepMs: PLAYER_MOVEMENT.fixedStepMs,
+        correctionTolerance: 1.5,
+        integrate: (footPosition, direction, elapsedMs) =>
+          moveBody({
+            position: footPosition,
+            direction,
+            speed: PLAYER_MOVEMENT.speed,
+            elapsedMs,
+            body: { width: 1, height: 1 },
+            world: {
+              bounds: { x: 0, y: 0, width: 1_000, height: 1_000 },
+              obstacles: [],
+            },
+          }),
+      });
       let authoritative: AuthoritativeMovementSnapshot | undefined;
       const observerCorrections: AuthoritativeMovementSnapshot[] = [];
       player.onMessage<AuthoritativeMovementSnapshot>(
         SERVER_MESSAGES.authoritativeMovement,
         (snapshot) => {
-          authoritative = snapshot;
+          setTimeout(() => {
+            prediction.reconcile(snapshot);
+            authoritative = snapshot;
+          }, latencyMs / 2);
         },
       );
       observer.onMessage<AuthoritativeMovementSnapshot>(
@@ -230,19 +252,20 @@ describe("village public presence", () => {
         (snapshot) => observerCorrections.push(snapshot),
       );
       const sends: Promise<void>[] = [];
-      for (let sequence = 1; sequence <= 10; sequence += 1) {
+      for (let step = 1; step <= 10; step += 1) {
+        const [intention] = prediction.advance(
+          { x: 1, y: 0 },
+          PLAYER_MOVEMENT.fixedStepMs,
+        );
+        if (!intention) throw new Error("Prediction did not produce an input");
         sends.push(
           new Promise((resolve) => {
             setTimeout(
               () => {
-                player.send(CLIENT_MESSAGES.movement, {
-                  x: 1,
-                  y: 0,
-                  sequence,
-                });
+                player.send(CLIENT_MESSAGES.movement, intention);
                 resolve();
               },
-              latencyMs / 2 + sequence * 50,
+              latencyMs / 2 + step * PLAYER_MOVEMENT.fixedStepMs,
             );
           }),
         );
@@ -251,6 +274,8 @@ describe("village public presence", () => {
 
       await waitUntil(() => {
         expect(authoritative?.lastProcessedSequence).toBe(10);
+        expect(prediction.position.x).toBeCloseTo(authoritative?.x ?? 0, 4);
+        expect(prediction.position.y).toBeCloseTo(authoritative?.y ?? 0, 4);
         for (const room of [player, observer]) {
           const observed = observedPlayer(room, player.sessionId);
           expect(observed?.x).toBeCloseTo(174, 4);
@@ -347,6 +372,20 @@ describe("village public presence", () => {
     const reconnecting = await joinVillage(endpoint, "Returning Ranger");
     const observer = await joinVillage(endpoint, "Patient Ranger");
     const entityId = reconnecting.sessionId;
+    const authoritativeSnapshots: AuthoritativeMovementSnapshot[] = [];
+    reconnecting.onMessage<AuthoritativeMovementSnapshot>(
+      SERVER_MESSAGES.authoritativeMovement,
+      (snapshot) => authoritativeSnapshots.push(snapshot),
+    );
+    reconnecting.send(CLIENT_MESSAGES.movement, {
+      x: 1,
+      y: 0,
+      sequence: 1,
+    });
+    await waitUntil(() => {
+      expect(authoritativeSnapshots.at(-1)?.lastProcessedSequence).toBe(1);
+    });
+    const snapshotsBeforeReconnect = authoritativeSnapshots.length;
     reconnecting.reconnection.minUptime = 0;
     reconnecting.reconnection.minDelay = 10;
     reconnecting.reconnection.delay = 10;
@@ -359,6 +398,13 @@ describe("village public presence", () => {
     await expect(didReconnect).resolves.toBeUndefined();
     expect(reconnecting.sessionId).toBe(entityId);
     await waitUntil(() => {
+      expect(authoritativeSnapshots.length).toBeGreaterThan(
+        snapshotsBeforeReconnect,
+      );
+      const latest = authoritativeSnapshots.at(-1);
+      expect(latest?.lastProcessedSequence).toBe(1);
+      expect(latest?.x).toBeCloseTo(132.6, 4);
+      expect(latest?.y).toBeCloseTo(224, 4);
       expect(observedPlayer(reconnecting, entityId)).toBeDefined();
       expect(observedPlayer(observer, entityId)).toBeDefined();
     });
@@ -384,3 +430,76 @@ describe("village public presence", () => {
     });
   });
 });
+
+if (process.env.RUN_LATENCY_SOAK === "true") {
+  describe("manual latency soak", () => {
+    it("keeps two clients convergent for ten minutes at 200 ms latency", async () => {
+      const endpoint = await startDevelopmentServer();
+      const player = await joinVillage(endpoint, "Soak Ranger");
+      const observer = await joinVillage(endpoint, "Soak Observer");
+      const prediction = new MovementSynchronizer({
+        initialPosition: { x: 128, y: 224 },
+        fixedStepMs: PLAYER_MOVEMENT.fixedStepMs,
+        correctionTolerance: 1.5,
+        integrate: (position, direction, elapsedMs) =>
+          moveBody({
+            position,
+            direction,
+            speed: PLAYER_MOVEMENT.speed,
+            elapsedMs,
+            body: { width: 1, height: 1 },
+            world: {
+              bounds: { x: 0, y: 0, width: 1_000, height: 1_000 },
+              obstacles: [],
+            },
+          }),
+      });
+      let authoritative: AuthoritativeMovementSnapshot | undefined;
+      let maximumCorrectionError = 0;
+      player.onMessage<AuthoritativeMovementSnapshot>(
+        SERVER_MESSAGES.authoritativeMovement,
+        (snapshot) => {
+          setTimeout(() => {
+            const reconciliation = prediction.reconcile(snapshot);
+            maximumCorrectionError = Math.max(
+              maximumCorrectionError,
+              reconciliation.error,
+            );
+            authoritative = snapshot;
+          }, 100);
+        },
+      );
+
+      const steps = (10 * 60 * 1_000) / PLAYER_MOVEMENT.fixedStepMs;
+      const startedAt = Date.now();
+      for (let step = 0; step < steps; step += 1) {
+        const x = Math.floor(step / 10) % 2 === 0 ? 1 : -1;
+        const [intention] = prediction.advance(
+          { x, y: 0 },
+          PLAYER_MOVEMENT.fixedStepMs,
+        );
+        if (!intention) throw new Error("Soak prediction missed an input");
+        setTimeout(() => {
+          player.send(CLIENT_MESSAGES.movement, intention);
+        }, 100);
+        const nextStepAt = startedAt + (step + 1) * PLAYER_MOVEMENT.fixedStepMs;
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.max(0, nextStepAt - Date.now())),
+        );
+      }
+
+      await vi.waitFor(
+        () => {
+          expect(authoritative?.lastProcessedSequence).toBe(steps);
+          expect(prediction.position.x).toBeCloseTo(authoritative?.x ?? 0, 4);
+          expect(observedPlayer(observer, player.sessionId)?.x).toBeCloseTo(
+            authoritative?.x ?? 0,
+            4,
+          );
+        },
+        { timeout: 10_000, interval: 50 },
+      );
+      expect(maximumCorrectionError).toBeLessThanOrEqual(1.5);
+    }, 620_000);
+  });
+}

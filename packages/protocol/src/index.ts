@@ -46,7 +46,7 @@ export interface PublicPlayerPresence {
   displayName: string;
   x: number;
   y: number;
-  facing: "north" | "south" | "east" | "west";
+  facing: "east" | "west";
   animation: "idle" | "walk";
   appearance: PublicAppearance;
 }

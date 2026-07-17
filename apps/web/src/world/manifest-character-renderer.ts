@@ -3,7 +3,7 @@ import type Phaser from "phaser";
 import villageCharacter from "@gameish/content/village-character";
 import type { PublicAppearance } from "@gameish/protocol";
 
-export type Facing = "north" | "south" | "east" | "west";
+export type Facing = "east" | "west";
 export type CharacterState = "idle" | "walk";
 
 export interface CharacterRenderer {
@@ -60,7 +60,7 @@ function isMirrored(facing: Facing): boolean {
 export class ManifestCharacterRenderer implements CharacterRenderer {
   readonly display: Phaser.GameObjects.Container;
   readonly #sprites: { layerId: string; sprite: Phaser.GameObjects.Sprite }[];
-  #facing: Facing = "south";
+  #facing: Facing = "east";
   #state: CharacterState = "idle";
 
   constructor(
@@ -96,7 +96,7 @@ export class ManifestCharacterRenderer implements CharacterRenderer {
           0,
           0,
           textureKey(layer.id),
-          facingRow("south") * source.frameColumns,
+          facingRow("east") * source.frameColumns,
         )
         .setOrigin(
           villageCharacter.footOrigin.x / villageCharacter.canvas.width,

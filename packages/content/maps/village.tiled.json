@@ -323,9 +323,9 @@
           "name": "walkable_village",
           "type": "navigation",
           "x": 0,
-          "y": 0,
+          "y": 192,
           "width": 512,
-          "height": 384
+          "height": 192
         }
       ],
       "opacity": 1,

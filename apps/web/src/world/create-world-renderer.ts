@@ -1,7 +1,7 @@
 import villageMap from "@gameish/content/village-map";
 import type { PublicPlayerPresence } from "@gameish/protocol";
 import villageCharacter from "@gameish/content/village-character";
-import { moveBody } from "@gameish/world";
+import { moveCharacterFoot, PLAYER_MOVEMENT } from "@gameish/world";
 import Phaser from "phaser";
 
 import type {
@@ -46,8 +46,6 @@ function predictedFacing(
   direction: { x: number; y: number },
   current: PublicPlayerPresence["facing"],
 ): PublicPlayerPresence["facing"] {
-  if (direction.y < 0) return "north";
-  if (direction.y > 0) return "south";
   if (direction.x < 0) return "west";
   if (direction.x > 0) return "east";
   return current;
@@ -140,8 +138,8 @@ class VillageScene extends Phaser.Scene {
       .setBounds(
         0,
         0,
-        villageMap.movement.bounds.width,
-        villageMap.movement.bounds.height,
+        villageMap.width * villageMap.tilewidth,
+        villageMap.height * villageMap.tileheight,
       )
       .setZoom(2)
       .setRoundPixels(true);
@@ -232,25 +230,17 @@ class VillageScene extends Phaser.Scene {
         if (!this.#movement) {
           this.#movement = new MovementSynchronizer({
             initialPosition: player,
-            fixedStepMs: 50,
+            fixedStepMs: PLAYER_MOVEMENT.fixedStepMs,
             correctionTolerance: 1.5,
             integrate: (position, direction, elapsedMs) => {
-              const bodyPosition = {
-                x: position.x + villageCharacter.collision.offsetX,
-                y: position.y + villageCharacter.collision.offsetY,
-              };
-              const moved = moveBody({
-                position: bodyPosition,
+              return moveCharacterFoot({
+                footPosition: position,
                 direction,
-                speed: 92,
+                speed: PLAYER_MOVEMENT.speed,
                 elapsedMs,
-                body: villageCharacter.collision,
+                collision: villageCharacter.collision,
                 world: villageMap.movement,
               });
-              return {
-                x: moved.x - villageCharacter.collision.offsetX,
-                y: moved.y - villageCharacter.collision.offsetY,
-              };
             },
           });
         }
