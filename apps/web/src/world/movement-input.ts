@@ -11,6 +11,22 @@ const movementBindings = {
 
 type MovementBinding = (typeof movementBindings)[keyof typeof movementBindings];
 
+export interface MovementDirection {
+  x: number;
+  y: number;
+}
+
+export function normalizeMovementDirection(
+  direction: MovementDirection,
+): MovementDirection {
+  const magnitude = Math.hypot(direction.x, direction.y);
+  if (magnitude === 0 || magnitude <= 1) return direction;
+  return {
+    x: direction.x / magnitude,
+    y: direction.y / magnitude,
+  };
+}
+
 export class MovementInput {
   readonly #pressed = new Set<MovementBinding>();
   readonly #canvas: HTMLCanvasElement;
@@ -51,11 +67,11 @@ export class MovementInput {
     canvas.addEventListener("blur", this.#clear);
   }
 
-  direction(): { x: number; y: number } {
-    return {
+  direction(): MovementDirection {
+    return normalizeMovementDirection({
       x: Number(this.#pressed.has("right")) - Number(this.#pressed.has("left")),
       y: Number(this.#pressed.has("down")) - Number(this.#pressed.has("up")),
-    };
+    });
   }
 
   consumeBasicAttack(): boolean {
