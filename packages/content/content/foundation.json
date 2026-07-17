@@ -11,6 +11,78 @@
       "serverOnly": {
         "developmentOnly": true
       }
+    },
+    {
+      "id": "item:mossback_scale",
+      "tags": ["combat", "loot"],
+      "references": [],
+      "clientVisible": {
+        "displayName": "Mossback Scale"
+      },
+      "serverOnly": {
+        "developmentOnly": false
+      }
     }
-  ]
+  ],
+  "combat": {
+    "schemaVersion": 1,
+    "classes": [
+      {
+        "id": "class:trailwarden",
+        "clientVisible": { "displayName": "Trailwarden" },
+        "serverOnly": {
+          "basicAttackId": "attack:trailward_strike",
+          "maximumResource": 100,
+          "startingResource": 100
+        }
+      }
+    ],
+    "attacks": [
+      {
+        "id": "attack:trailward_strike",
+        "clientVisible": {
+          "displayName": "Trailward Strike",
+          "animation": "attack_basic"
+        },
+        "serverOnly": {
+          "damage": 18,
+          "range": 84,
+          "cooldownMs": 600,
+          "resourceCost": 10,
+          "actionRateLimitMs": 100
+        }
+      }
+    ],
+    "monsters": [
+      {
+        "id": "monster:mossback",
+        "clientVisible": { "displayName": "Mossback" },
+        "serverOnly": {
+          "maxHealth": 54,
+          "attackDamage": 6,
+          "attackRange": 34,
+          "attackCooldownMs": 1200,
+          "moveSpeed": 42,
+          "aggroRange": 180,
+          "leashRange": 220,
+          "respawnMs": 3000,
+          "collision": { "width": 22, "height": 18 }
+        }
+      }
+    ],
+    "encounters": [
+      {
+        "id": "encounter:village_mossback",
+        "monsterId": "monster:mossback",
+        "spawn": { "x": 300, "y": 256 }
+      }
+    ],
+    "loot": [
+      {
+        "id": "loot:mossback_cache",
+        "monsterId": "monster:mossback",
+        "entries": [{ "id": "item:mossback_scale", "weight": 1 }]
+      }
+    ]
+  }
 }

@@ -42,6 +42,12 @@ interface VillageSceneOptions {
   onReady: (input: MovementInput) => void;
 }
 
+interface MonsterDisplay {
+  display: Phaser.GameObjects.Container;
+  body: Phaser.GameObjects.Arc;
+  health: Phaser.GameObjects.Rectangle;
+}
+
 function predictedFacing(
   direction: { x: number; y: number },
   current: PublicPlayerPresence["facing"],
@@ -54,6 +60,7 @@ function predictedFacing(
 class VillageScene extends Phaser.Scene {
   readonly #options: VillageSceneOptions;
   readonly #characters = new Map<string, ManifestCharacterRenderer>();
+  readonly #monsterDisplays = new Map<string, MonsterDisplay>();
   readonly #remoteMovement = new Map<string, RemoteInterpolator>();
   readonly #serverClock = new ServerTimeEstimator();
   #input?: MovementInput;
@@ -155,6 +162,9 @@ class VillageScene extends Phaser.Scene {
   override update(time: number, delta: number): void {
     if (!this.#input) return;
     const direction = this.#input.direction();
+    if (this.#input.consumeBasicAttack()) {
+      this.#options.presence.basicAttack();
+    }
     if (this.#movement) {
       for (const intention of this.#movement.advance(direction, delta)) {
         this.#options.presence.sendMovement(intention);
@@ -199,6 +209,56 @@ class VillageScene extends Phaser.Scene {
   #applyPresence(snapshot: VillagePresenceSnapshot): void {
     this.#latestPresence = snapshot;
     this.#serverClock.observe(snapshot.serverTimeMs, Date.now());
+    const currentMonsterIds = new Set(
+      snapshot.monsters.map((monster) => monster.entityId),
+    );
+    for (const [entityId, monsterDisplay] of this.#monsterDisplays) {
+      if (currentMonsterIds.has(entityId)) continue;
+      monsterDisplay.display.destroy(true);
+      this.#monsterDisplays.delete(entityId);
+    }
+    for (const monster of snapshot.monsters) {
+      let monsterDisplay = this.#monsterDisplays.get(monster.entityId);
+      if (!monsterDisplay) {
+        const body = this.add
+          .circle(0, 0, 12, 0x7ca65b)
+          .setStrokeStyle(2, 0x17251c)
+          .setInteractive({ useHandCursor: true });
+        const label = this.add
+          .text(0, -28, monster.displayName, {
+            color: "#fff4b3",
+            backgroundColor: "rgb(13 23 17 / 75%)",
+            fontFamily: "system-ui, sans-serif",
+            fontSize: "7px",
+            padding: { x: 2, y: 1 },
+          })
+          .setOrigin(0.5, 1);
+        const healthBackground = this.add.rectangle(0, -19, 30, 4, 0x17251c);
+        const health = this.add.rectangle(0, -19, 28, 2, 0xe46d5c);
+        const display = this.add.container(monster.x, monster.y, [
+          body,
+          healthBackground,
+          health,
+          label,
+        ]);
+        body.on("pointerdown", () => {
+          this.#options.presence.selectTarget(monster.entityId);
+        });
+        monsterDisplay = { display, body, health };
+        this.#monsterDisplays.set(monster.entityId, monsterDisplay);
+      }
+      monsterDisplay.display.setPosition(monster.x, monster.y);
+      monsterDisplay.display.setDepth(4 + monster.y / 1_000);
+      monsterDisplay.body.setFillStyle(
+        snapshot.selectedTargetEntityId === monster.entityId
+          ? 0xffc857
+          : 0x7ca65b,
+      );
+      monsterDisplay.health.scaleX = Math.max(0, monster.healthFraction);
+      monsterDisplay.display.setAlpha(
+        monster.animation === "defeated" ? 0.45 : 1,
+      );
+    }
     const currentIds = new Set(
       snapshot.players.map((player) => player.entityId),
     );
@@ -300,6 +360,10 @@ class VillageScene extends Phaser.Scene {
   shutdown(): void {
     this.#unsubscribePresence?.();
     this.#input?.destroy();
+    for (const monsterDisplay of this.#monsterDisplays.values()) {
+      monsterDisplay.display.destroy(true);
+    }
+    this.#monsterDisplays.clear();
     this.#characters.clear();
   }
 }

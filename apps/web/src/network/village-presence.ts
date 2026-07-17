@@ -1,20 +1,82 @@
 import { Client, type Room } from "@colyseus/sdk";
+import { z } from "zod";
 import {
   CLIENT_MESSAGES,
+  ERROR_CODES,
   ROOM_NAMES,
   SERVER_MESSAGES,
   type AuthoritativeMovementSnapshot,
+  type CombatResult,
+  type ErrorCode,
   type MovementIntention,
+  type PublicMonsterPresence,
   type PublicPlayerPresence,
 } from "@gameish/protocol";
+
+const errorCodeSchema = z.enum(
+  Object.values(ERROR_CODES) as [ErrorCode, ...ErrorCode[]],
+);
+const authoritativeMovementSchema = z
+  .object({
+    x: z.number().finite(),
+    y: z.number().finite(),
+    lastProcessedSequence: z.number().int().nonnegative(),
+    serverTimeMs: z.number().finite(),
+  })
+  .strict();
+const targetSelectedSchema = z
+  .object({ targetEntityId: z.string().min(1).max(80) })
+  .strict();
+const combatResultSchema = z.discriminatedUnion("accepted", [
+  z
+    .object({
+      accepted: z.literal(true),
+      actionId: z.string(),
+      targetEntityId: z.string(),
+      damage: z.number().nonnegative(),
+      remainingResource: z.number().nonnegative(),
+      cooldownEndsAtMs: z.number().finite(),
+      defeated: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      accepted: z.literal(false),
+      actionId: z.string(),
+      code: errorCodeSchema,
+    })
+    .strict(),
+]);
+const combatEventSchema = z
+  .object({
+    kind: z.enum([
+      "spawned",
+      "aggro",
+      "hit",
+      "defeated",
+      "respawned",
+      "attack",
+    ]),
+    entityId: z.string(),
+    healthFraction: z.number().min(0).max(1).optional(),
+  })
+  .strict();
 
 type SynchronizedPlayer = Omit<PublicPlayerPresence, "entityId">;
 
 interface VillageRoomState {
   serverTimeMs: number;
-  players: {
+  players?: {
     forEach(
       callback: (player: SynchronizedPlayer, entityId: string) => void,
+    ): void;
+  };
+  monsters?: {
+    forEach(
+      callback: (
+        monster: Omit<PublicMonsterPresence, "entityId">,
+        entityId: string,
+      ) => void,
     ): void;
   };
 }
@@ -25,12 +87,17 @@ export interface VillagePresenceSnapshot {
   connectionStatus: "connected" | "reconnecting" | "disconnected";
   localMovement: AuthoritativeMovementSnapshot | undefined;
   players: readonly PublicPlayerPresence[];
+  monsters: readonly PublicMonsterPresence[];
+  selectedTargetEntityId: string | null;
+  combatResult: CombatResult | undefined;
 }
 
 export interface VillagePresence {
   readonly developmentRoomId: string;
   readonly simulatedLatencyMs: number;
   sendMovement(intention: MovementIntention): void;
+  selectTarget(targetEntityId: string): void;
+  basicAttack(): void;
   setSimulatedLatency(latencyMs: number): void;
   subscribe(listener: (snapshot: VillagePresenceSnapshot) => void): () => void;
   close(): Promise<void>;
@@ -60,6 +127,8 @@ export async function connectDevelopmentVillage(
   let connectionStatus: VillagePresenceSnapshot["connectionStatus"] =
     "connected";
   let localMovement: AuthoritativeMovementSnapshot | undefined;
+  let selectedTargetEntityId: string | null = null;
+  let combatResult: CombatResult | undefined;
 
   room.reconnection.minUptime = 0;
   room.reconnection.minDelay = 100;
@@ -83,7 +152,7 @@ export async function connectDevelopmentVillage(
 
   const publish = (state: VillageRoomState) => {
     const players: PublicPlayerPresence[] = [];
-    state.players.forEach((player, entityId) => {
+    state.players?.forEach((player, entityId) => {
       players.push({
         entityId,
         displayName: player.displayName,
@@ -98,25 +167,70 @@ export async function connectDevelopmentVillage(
         },
       });
     });
+    const monsters: PublicMonsterPresence[] = [];
+    state.monsters?.forEach((monster, entityId) => {
+      monsters.push({
+        entityId,
+        displayName: monster.displayName,
+        x: monster.x,
+        y: monster.y,
+        animation: monster.animation,
+        healthFraction: monster.healthFraction,
+      });
+    });
     const snapshot: VillagePresenceSnapshot = {
       localEntityId: room.sessionId,
       serverTimeMs: state.serverTimeMs,
       connectionStatus,
       localMovement,
       players,
+      monsters,
+      selectedTargetEntityId,
+      combatResult,
     };
     afterNetworkDelay(() => {
       for (const listener of listeners) listener(snapshot);
     });
   };
   room.onStateChange(publish);
-  room.onMessage<AuthoritativeMovementSnapshot>(
+  room.onMessage<unknown>(
     SERVER_MESSAGES.authoritativeMovement,
-    (snapshot) => {
-      localMovement = snapshot;
+    (unsafeSnapshot) => {
+      const snapshot = authoritativeMovementSchema.safeParse(unsafeSnapshot);
+      if (!snapshot.success) return;
+      localMovement = snapshot.data;
       publish(room.state);
     },
   );
+  room.onMessage<unknown>(SERVER_MESSAGES.targetSelected, (unsafeSelection) => {
+    const selection = targetSelectedSchema.safeParse(unsafeSelection);
+    if (!selection.success) return;
+    selectedTargetEntityId = selection.data.targetEntityId;
+    publish(room.state);
+  });
+  room.onMessage<unknown>(SERVER_MESSAGES.combatResult, (unsafeResult) => {
+    const result = combatResultSchema.safeParse(unsafeResult);
+    if (!result.success) return;
+    combatResult = result.data;
+    publish(room.state);
+  });
+  room.onMessage<unknown>(SERVER_MESSAGES.combatRejected, (unsafeRejection) => {
+    const rejection = z
+      .object({ code: errorCodeSchema })
+      .strict()
+      .safeParse(unsafeRejection);
+    if (!rejection.success) return;
+    combatResult = {
+      accepted: false,
+      actionId: "target-selection",
+      code: rejection.data.code,
+    };
+    publish(room.state);
+  });
+  room.onMessage<unknown>(SERVER_MESSAGES.combatEvent, (unsafeEvent) => {
+    if (!combatEventSchema.safeParse(unsafeEvent).success) return;
+    publish(room.state);
+  });
   room.onDrop(() => {
     connectionStatus = "reconnecting";
     publish(room.state);
@@ -137,6 +251,21 @@ export async function connectDevelopmentVillage(
     },
     sendMovement(intention) {
       afterNetworkDelay(() => room.send(CLIENT_MESSAGES.movement, intention));
+    },
+    selectTarget(targetEntityId) {
+      afterNetworkDelay(() =>
+        room.send(CLIENT_MESSAGES.targetSelection, { targetEntityId }),
+      );
+    },
+    basicAttack() {
+      if (!selectedTargetEntityId) return;
+      const targetEntityId = selectedTargetEntityId;
+      afterNetworkDelay(() =>
+        room.send(CLIENT_MESSAGES.basicAttack, {
+          actionId: crypto.randomUUID(),
+          targetEntityId,
+        }),
+      );
     },
     setSimulatedLatency(latencyMs) {
       simulatedLatencyMs = Math.max(0, Math.min(500, latencyMs));

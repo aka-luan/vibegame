@@ -12,6 +12,10 @@
       "types": "./src/canonical.ts",
       "default": "./dist/canonical.js"
     },
+    "./combat": {
+      "types": "./src/combat.ts",
+      "default": "./dist/combat.js"
+    },
     "./village-map": {
       "types": "./src/village-map-artifact.d.ts",
       "default": "./dist/artifacts/village-map.js"
@@ -23,6 +27,14 @@
     "./village-character": {
       "types": "./src/village-character-artifact.d.ts",
       "default": "./dist/artifacts/village-character.js"
+    },
+    "./village-combat-server": {
+      "types": "./src/village-combat-server-artifact.d.ts",
+      "default": "./dist/artifacts/village-combat-server.js"
+    },
+    "./village-combat": {
+      "types": "./src/village-combat-artifact.d.ts",
+      "default": "./dist/artifacts/village-combat.js"
     }
   },
   "scripts": {

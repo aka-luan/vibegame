@@ -14,8 +14,14 @@ type MovementBinding = (typeof movementBindings)[keyof typeof movementBindings];
 export class MovementInput {
   readonly #pressed = new Set<MovementBinding>();
   readonly #canvas: HTMLCanvasElement;
+  #basicAttackRequested = false;
 
   readonly #handleKeyDown = (event: KeyboardEvent) => {
+    if (event.code === "Digit1") {
+      event.preventDefault();
+      this.#basicAttackRequested = true;
+      return;
+    }
     const binding =
       movementBindings[event.code as keyof typeof movementBindings];
     if (!binding) return;
@@ -50,6 +56,12 @@ export class MovementInput {
       x: Number(this.#pressed.has("right")) - Number(this.#pressed.has("left")),
       y: Number(this.#pressed.has("down")) - Number(this.#pressed.has("up")),
     };
+  }
+
+  consumeBasicAttack(): boolean {
+    const requested = this.#basicAttackRequested;
+    this.#basicAttackRequested = false;
+    return requested;
   }
 
   focus(): void {

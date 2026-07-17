@@ -61,6 +61,36 @@ body,
   outline-offset: 3px;
 }
 
+.combat-panel {
+  margin: 0.75rem 0;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgb(147 184 109 / 40%);
+}
+
+.combat-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.monster-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.monster-row button {
+  min-height: 2.25rem;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.combat-feedback {
+  margin-top: 0.6rem;
+  color: #fff4b3;
+  font-size: 0.8rem;
+}
+
 .eyebrow {
   color: #b8d69b;
   font-size: 0.75rem;

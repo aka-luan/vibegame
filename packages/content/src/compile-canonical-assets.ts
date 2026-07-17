@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 import { characterManifestSchema } from "./character-manifest.js";
+import { compileClientCombatCatalog } from "./combat.js";
+import { contentSchema } from "./index.js";
 import { compileTiledMap } from "./maps.js";
 
 const packageRoot = new URL("../", import.meta.url);
@@ -15,6 +17,16 @@ function moduleSource(value: unknown): string {
 }
 
 async function compileCanonicalAssets(): Promise<void> {
+  const canonicalContent = await readJson("content/foundation.json");
+  const parsedContent = contentSchema.safeParse(canonicalContent);
+  if (!parsedContent.success || !parsedContent.data.combat) {
+    throw new Error(
+      `Canonical combat content failed:\n${parsedContent.success ? "Combat catalog is missing" : parsedContent.error.message}`,
+    );
+  }
+  const parsedCombat = parsedContent.data.combat;
+  const clientCombat = compileClientCombatCatalog(parsedCombat);
+
   const manifest = characterManifestSchema.safeParse(
     await readJson("manifests/village-character.json"),
   );
@@ -55,6 +67,14 @@ async function compileCanonicalAssets(): Promise<void> {
     writeFile(
       new URL("village-character.js", artifactDirectory),
       moduleSource(manifest.data),
+    ),
+    writeFile(
+      new URL("village-combat-server.js", artifactDirectory),
+      moduleSource(parsedCombat),
+    ),
+    writeFile(
+      new URL("village-combat.js", artifactDirectory),
+      moduleSource(clientCombat),
     ),
   ]);
 }

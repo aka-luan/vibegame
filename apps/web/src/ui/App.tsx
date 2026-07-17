@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import villageCombat from "@gameish/content/village-combat";
 
 import {
   connectDevelopmentVillage,
   type VillagePresence,
+  type VillagePresenceSnapshot,
 } from "../network/village-presence.js";
 import {
   createWorldRenderer,
@@ -38,6 +40,10 @@ function requestedSimulatedLatency(): number {
   return Number.isFinite(value) ? Math.max(0, Math.min(500, value)) : 0;
 }
 
+const basicAttack = villageCombat.attacks.find(
+  (attack) => attack.id === villageCombat.classes[0]?.basicAttackId,
+);
+
 export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   const renderer = useRef<WorldRenderer | null>(null);
   const presence = useRef<VillagePresence | null>(null);
@@ -49,9 +55,16 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   const [simulatedLatencyMs, setSimulatedLatencyMs] = useState(
     requestedSimulatedLatency,
   );
+  const [combatSnapshot, setCombatSnapshot] = useState<
+    Pick<
+      VillagePresenceSnapshot,
+      "monsters" | "selectedTargetEntityId" | "combatResult"
+    >
+  >({ monsters: [], selectedTargetEntityId: null, combatResult: undefined });
 
   useEffect(() => {
     let active = true;
+    let unsubscribeCombat: (() => void) | undefined;
     if (!developmentLoginEnabled) {
       setConnectionError("Multiplayer development login is disabled.");
       return () => undefined;
@@ -64,6 +77,13 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
         if (!active) return connectedPresence.close();
         presence.current = connectedPresence;
         setDevelopmentRoomId(connectedPresence.developmentRoomId);
+        unsubscribeCombat = connectedPresence.subscribe((presenceSnapshot) => {
+          setCombatSnapshot({
+            monsters: presenceSnapshot.monsters,
+            selectedTargetEntityId: presenceSnapshot.selectedTargetEntityId,
+            combatResult: presenceSnapshot.combatResult,
+          });
+        });
         renderer.current = createWorldRenderer(
           worldRoot,
           connectedPresence,
@@ -79,6 +99,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       active = false;
       renderer.current?.destroy();
       renderer.current = null;
+      unsubscribeCombat?.();
       const connectedPresence = presence.current;
       presence.current = null;
       if (connectedPresence) void connectedPresence.close();
@@ -98,6 +119,41 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       {snapshot.interaction ? (
         <p className="interaction-hint">E — {snapshot.interaction}</p>
       ) : null}
+      <section aria-labelledby="combat-heading" className="combat-panel">
+        <h2 id="combat-heading">Nearby encounters</h2>
+        {combatSnapshot.monsters.map((monster) => (
+          <div className="monster-row" key={monster.entityId}>
+            <button
+              type="button"
+              aria-pressed={
+                combatSnapshot.selectedTargetEntityId === monster.entityId
+              }
+              onClick={() => presence.current?.selectTarget(monster.entityId)}
+            >
+              {monster.displayName} ({Math.round(monster.healthFraction * 100)}
+              %)
+            </button>
+            {combatSnapshot.selectedTargetEntityId === monster.entityId ? (
+              <button
+                type="button"
+                onClick={() => presence.current?.basicAttack()}
+                disabled={monster.animation === "defeated"}
+              >
+                1 — {basicAttack?.displayName ?? "Basic attack"}
+              </button>
+            ) : null}
+          </div>
+        ))}
+        {combatSnapshot.combatResult ? (
+          <p className="combat-feedback" role="status">
+            {combatSnapshot.combatResult.accepted
+              ? combatSnapshot.combatResult.defeated
+                ? "Mossback defeated."
+                : `Hit for ${combatSnapshot.combatResult.damage}.`
+              : combatSnapshot.combatResult.code}
+          </p>
+        ) : null}
+      </section>
       <button type="button" onClick={() => renderer.current?.focus()}>
         Return to world
       </button>

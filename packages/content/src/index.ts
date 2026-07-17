@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { combatCatalogSchema } from "./combat.js";
+
 const namespacedId = z
   .string()
   .regex(
@@ -23,6 +25,7 @@ export const contentSchema = z
   .object({
     schemaVersion: z.literal(1),
     definitions: z.array(contentDefinition),
+    combat: combatCatalogSchema.optional(),
   })
   .superRefine((content, context) => {
     const identifiers = new Set(
@@ -44,6 +47,17 @@ export const contentSchema = z
             code: "custom",
             path: ["definitions", index, "references", referenceIndex],
             message: `Missing content reference: ${reference}`,
+          });
+        }
+      });
+    });
+    content.combat?.loot.forEach((loot, lootIndex) => {
+      loot.entries.forEach((entry, entryIndex) => {
+        if (!identifiers.has(entry.id)) {
+          context.addIssue({
+            code: "custom",
+            path: ["combat", "loot", lootIndex, "entries", entryIndex, "id"],
+            message: `Missing loot item reference: ${entry.id}`,
           });
         }
       });
