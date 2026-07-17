@@ -18,7 +18,7 @@ The expansion requires explicit repository-owner approval before implementation.
 
 ## Project mission
 
-Build an original browser-first, top-down 2D multiplayer action RPG with approachable cooperative play. Never copy protected games' names, characters, classes, maps, stories, distinctive UI, animations, or assets. Generic genre inspiration is permitted; substantially similar expression is not.
+Build an original browser-first, 2D side-view multiplayer action RPG with approachable cooperative play. Maps are horizontally composed side-view spaces with a defined walkable ground region; movement is horizontal traversal plus shallow vertical positioning for depth. It is not a top-down, isometric, or platforming game; characters render from a side or three-quarter-side perspective. Never copy protected games' names, characters, classes, maps, stories, distinctive UI, animations, or assets. Generic genre inspiration is permitted; substantially similar expression is not.
 
 ## Repository conventions
 
@@ -147,7 +147,7 @@ Documentation-only changes require at least Markdown/link checks when available,
 
 ## Map conventions
 
-Tiled sources must distinguish client render data from authoritative server geometry and metadata. Required logical layers/groups are:
+Maps are authored as horizontally composed side-view spaces with a defined walkable ground region that bounds vertical positioning. Tiled sources must distinguish client render data from authoritative server geometry and metadata. Required logical layers/groups are:
 
 - `background`, `ground`, `below_entities`, `entities`, `foreground`, `effects`
 - `collision`, `navigation`, `interactives`, `spawns`, `portals`
@@ -159,7 +159,7 @@ Render layers go only to the client artifact as needed. Collision, navigation, s
 - Use one manifest-defined canonical rig for the slice.
 - Manifests declare canvas, scale, foot origin, collision separately from pixels, facings, animations, frame timing, attachments, layer depth, and fallbacks.
 - Required character states are `idle`, `walk`, `attack_basic`, `ability_1` through `ability_4`, `hit`, and `defeated`.
-- The slice uses north, south, east, and west; west may mirror east.
+- The slice renders left and right side-view facings; west may mirror east. Vertical movement keeps the current horizontal facing.
 - Compatible equipment layers share frame timing, canvas, origin, and direction with the base rig.
 - Gameplay talks to a narrow renderer interface; never hardcode item-specific art paths or pixel positions in combat/equipment rules.
 - Every asset records license, provenance, source, export tool/version, rig version, dimensions, frame arrangement, and replacement compatibility.

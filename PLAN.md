@@ -14,7 +14,7 @@ Application implementation is authorized and must proceed through the ordered Gi
 
 ## Product definition
 
-Gameish is an original, browser-first, top-down 2D multiplayer action RPG for desktop keyboard-and-mouse players. It aims to make cooperative play approachable without exposing server lists, room identifiers, or MMO infrastructure terminology.
+Gameish is an original, browser-first, 2D side-view multiplayer action RPG for desktop keyboard-and-mouse players. Maps are horizontally composed side-view spaces with a defined walkable ground region: players move freely along the horizontal axis and shallowly along the vertical axis for positioning and visual depth. It is not a top-down, isometric, or platforming game. It aims to make cooperative play approachable without exposing server lists, room identifiers, or MMO infrastructure terminology.
 
 References to existing games describe only the broad category. Protected names, characters, maps, stories, classes, interface designs, animations, assets, and other distinctive intellectual property must not be copied. The final world, class, characters, monsters, items, story, visual language, and terminology must be original.
 
@@ -40,7 +40,7 @@ Become a distinctive adventurer in an evolving world, help local characters, mas
 
 | Area             | Decision                                                                                                                             |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Perspective      | Top-down                                                                                                                             |
+| Perspective      | 2D side-view with limited planar movement: horizontal traversal plus shallow vertical positioning inside each map's defined walkable ground region; characters rendered from a side or three-quarter-side perspective; explicitly not top-down, isometric, or platforming |
 | Combat           | Target-based hotbar with one basic attack and four class abilities                                                                   |
 | World            | Compact authored areas joined by natural transitions                                                                                 |
 | Region           | One North American deployment initially                                                                                              |
@@ -50,7 +50,7 @@ Become a distinctive adventurer in an evolving world, help local characters, mas
 | Accounts         | Browser-bound guests plus deterministic development login behind an explicit development gate                                        |
 | Maps/content     | Tiled maps and validated, version-controlled content files                                                                           |
 | Character art    | One canonical rig with replaceable raster sprite sheets                                                                              |
-| Facing           | Four directions for the slice; east/west mirroring is permitted; manifests may later support eight                                   |
+| Facing           | Left and right rendered facing for the slice; west may mirror east; vertical movement keeps the current horizontal facing; manifests may later add three-quarter variants |
 | Ability movement | Movement normally remains available; individual abilities may define cast or recovery locks                                          |
 | Shared credit    | Nearby active participants qualify; eligible nearby party members need not land the final hit; AFK or distant players do not qualify |
 | Guest recovery   | Losing the browser credential loses access during this slice; named-account recovery is deferred                                     |
@@ -157,7 +157,7 @@ Hidden instancing and parties are part of the approved definition. If scope must
 ### Approved stack
 
 - TypeScript throughout the browser, server, shared contracts, content tools, and tests.
-- Phaser 4 for the top-down world renderer, pinned after a compatibility spike.
+- Phaser 4 for the side-view world renderer, pinned after a compatibility spike.
 - React DOM for menus, dialogue, inventory, maps, chat, accessibility, and account screens.
 - Vite for browser development and production builds.
 - Colyseus over its standard WebSocket transport for rooms, synchronization, matchmaking, and reconnection, pinned after per-client filtering is proven.
@@ -287,9 +287,9 @@ Canonical content lives in validated, version-controlled files with stable names
 
 Server catalogs contain hidden rules and rewards; client catalogs contain presentation-safe data only. Deployments publish immutable content artifacts identified by a content version.
 
-Tiled maps provide explicit render layers plus collision, navigation, spawn, portal, and interaction data. Compilation emits client rendering artifacts and minimal server geometry/metadata artifacts.
+Tiled maps are authored as horizontally composed side-view spaces and provide explicit render layers plus collision, navigation, spawn, portal, and interaction data. Each map defines a walkable ground region that bounds vertical positioning. Compilation emits client rendering artifacts and minimal server geometry/metadata artifacts.
 
-Character art uses a manifest-defined rig, origin, attachments, facing, animation names, layer ordering, and fallbacks. Placeholder sheets use four-direction raster animation. Gameplay talks to a narrow character-renderer interface so a future renderer can replace the compositor without changing combat or equipment rules.
+Character art uses a manifest-defined rig, origin, attachments, facing, animation names, layer ordering, and fallbacks. Placeholder sheets use side-view raster animation with left/right facing; west may mirror east. Gameplay talks to a narrow character-renderer interface so a future renderer can replace the compositor without changing combat or equipment rules.
 
 Every non-original asset records license, provenance, source, export tool/version, rig version, dimensions, frame arrangement, and compatibility metadata. Protected games must not be placed in prompt or asset-reference folders.
 
@@ -431,7 +431,7 @@ Changes run the smallest relevant command during iteration and all applicable co
 ## Deferred features
 
 - Final game name and production visual style.
-- Eight-direction production animation if four directions suffice.
+- Three-quarter or additional-facing production animation if left/right facings suffice.
 - Skeletal animation and alternative character renderer.
 - Mobile, gamepad, and native packaging.
 - Named accounts, recovery, and guest conversion.

@@ -1,6 +1,6 @@
 # ADR-0009: Manifest-driven raster animation for one canonical rig
 
-- Status: Accepted
+- Status: Accepted; facing set amended by ADR-0011
 - Date: 2026-07-14
 
 ## Context
