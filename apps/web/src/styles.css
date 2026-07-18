@@ -178,3 +178,78 @@ body,
   font-size: 0.75rem;
   overflow-wrap: anywhere;
 }
+
+.dialogue-dialog {
+  position: fixed;
+  z-index: 20;
+  top: auto;
+  right: 1rem;
+  bottom: 1rem;
+  left: 1rem;
+  width: min(48rem, calc(100vw - 2rem));
+  margin: 0 auto;
+  padding: 1rem;
+  border: 2px solid #ffe27a;
+  border-radius: 0.75rem;
+  background: rgb(13 23 17 / 96%);
+  color: #f4f4dd;
+  font-size: calc(1rem * var(--dialogue-scale));
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 45%);
+}
+
+.dialogue-dialog::backdrop {
+  background: rgb(0 0 0 / 24%);
+}
+
+.dialogue-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.dialogue-heading button,
+.dialogue-choices button {
+  min-height: 2.75rem;
+}
+
+.dialogue-speaker {
+  margin: 0;
+  color: #ffe27a;
+  font-weight: 800;
+}
+
+.dialogue-text {
+  margin: 0.8rem 0;
+  line-height: 1.55;
+}
+
+.dialogue-choices {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.dialogue-choices button {
+  color: #16251c;
+  background: #d7e9ca;
+  text-align: left;
+}
+
+.dialogue-scale-control {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.8rem;
+  color: #b8d69b;
+  font-size: 0.8rem;
+}
+
+.dialogue-scale-control input {
+  flex: 1;
+  min-width: 8rem;
+}
+
+.dialogue-error {
+  color: #ffb4a8;
+  font-size: 0.85rem;
+}

@@ -35,6 +35,18 @@
     "./village-combat": {
       "types": "./src/village-combat-artifact.d.ts",
       "default": "./dist/artifacts/village-combat.js"
+    },
+    "./dialogue": {
+      "types": "./src/dialogue.ts",
+      "default": "./dist/dialogue.js"
+    },
+    "./village-dialogue-server": {
+      "types": "./src/village-dialogue-server-artifact.d.ts",
+      "default": "./dist/artifacts/village-dialogue-server.js"
+    },
+    "./village-dialogue": {
+      "types": "./src/village-dialogue-artifact.d.ts",
+      "default": "./dist/artifacts/village-dialogue.js"
     }
   },
   "scripts": {

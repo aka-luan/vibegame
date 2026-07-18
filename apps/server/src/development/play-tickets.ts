@@ -5,6 +5,7 @@ import { ERROR_CODES, type ErrorCode } from "@gameish/protocol";
 export interface DevelopmentAdmission {
   userId: string;
   characterId: string;
+  partyId: string | undefined;
   displayName: string;
   logicalDestination: "map:village";
   contentVersion: "content:village_m1_v1";
@@ -36,7 +37,10 @@ export class DevelopmentPlayTickets {
     this.#timeToLiveMs = options?.timeToLiveMs ?? 15_000;
   }
 
-  issue(displayName: string): { ticket: string; expiresAt: number } {
+  issue(
+    displayName: string,
+    options: { partyId?: string | undefined } = {},
+  ): { ticket: string; expiresAt: number } {
     this.#purgeExpired();
     const ticket = randomBytes(32).toString("base64url");
     const expiresAt = this.#now() + this.#timeToLiveMs;
@@ -44,6 +48,7 @@ export class DevelopmentPlayTickets {
       admission: {
         userId: `development:user:${randomUUID()}`,
         characterId: `development:character:${randomUUID()}`,
+        partyId: options.partyId,
         displayName,
         logicalDestination: "map:village",
         contentVersion: "content:village_m1_v1",

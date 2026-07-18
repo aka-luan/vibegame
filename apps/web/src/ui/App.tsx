@@ -11,6 +11,7 @@ import {
   type WorldRenderer,
   type WorldSnapshot,
 } from "../world/create-world-renderer.js";
+import { DialogueDialog } from "./DialogueDialog.js";
 
 const initialSnapshot: WorldSnapshot = {
   x: 128,
@@ -62,6 +63,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     requestedSimulatedLatency,
   );
   const [clockMs, setClockMs] = useState(() => Date.now());
+  const [dialogueTextScale, setDialogueTextScale] = useState(1);
   const [combatSnapshot, setCombatSnapshot] = useState<
     Pick<
       VillagePresenceSnapshot,
@@ -70,6 +72,8 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       | "combatResult"
       | "combatState"
       | "telegraphs"
+      | "dialogueNode"
+      | "dialogueError"
       | "serverTimeOffsetMs"
     >
   >({
@@ -78,6 +82,8 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     combatResult: undefined,
     combatState: undefined,
     telegraphs: [],
+    dialogueNode: undefined,
+    dialogueError: undefined,
     serverTimeOffsetMs: 0,
   });
 
@@ -103,6 +109,8 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
             combatResult: presenceSnapshot.combatResult,
             combatState: presenceSnapshot.combatState,
             telegraphs: presenceSnapshot.telegraphs,
+            dialogueNode: presenceSnapshot.dialogueNode,
+            dialogueError: presenceSnapshot.dialogueError,
             serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
           });
         });
@@ -132,6 +140,10 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     const timer = window.setInterval(() => setClockMs(Date.now()), 100);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!combatSnapshot.dialogueNode) renderer.current?.focus();
+  }, [combatSnapshot.dialogueNode]);
 
   const estimatedServerTimeMs = clockMs + combatSnapshot.serverTimeOffsetMs;
   const cooldownRemaining = (actionId: string): number =>
@@ -282,6 +294,27 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
             offset: {snapshot.serverTimeOffsetMs.toFixed(0)} ms.
           </span>
         </details>
+      ) : null}
+      {combatSnapshot.dialogueNode ? (
+        <DialogueDialog
+          node={combatSnapshot.dialogueNode}
+          error={combatSnapshot.dialogueError}
+          textScale={dialogueTextScale}
+          onTextScaleChange={setDialogueTextScale}
+          onChoice={(choiceId) => {
+            const node = combatSnapshot.dialogueNode;
+            if (node) {
+              presence.current?.selectDialogueChoice(
+                node.npcId,
+                node.nodeId,
+                choiceId,
+              );
+            }
+          }}
+          onClose={() => {
+            presence.current?.closeDialogue();
+          }}
+        />
       ) : null}
     </aside>
   );

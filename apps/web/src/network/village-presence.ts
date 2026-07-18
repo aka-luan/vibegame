@@ -9,6 +9,7 @@ import {
   type CombatStateMessage,
   type CombatTelegraphMessage,
   type CombatResult,
+  type DialogueNodeMessage,
   type ErrorCode,
   type MovementIntention,
   type PublicMonsterPresence,
@@ -106,6 +107,18 @@ const combatTelegraphSchema = z
     interruptible: z.boolean(),
   })
   .strict();
+const dialogueNodeSchema = z
+  .object({
+    dialogueId: z.string().min(1),
+    npcId: z.string().min(1),
+    nodeId: z.string().min(1),
+    speaker: z.string().min(1),
+    text: z.string().min(1),
+    choices: z.array(
+      z.object({ id: z.string().min(1), label: z.string().min(1) }).strict(),
+    ),
+  })
+  .strict();
 
 type SynchronizedPlayer = Omit<PublicPlayerPresence, "entityId">;
 
@@ -137,6 +150,8 @@ export interface VillagePresenceSnapshot {
   combatResult: CombatResult | undefined;
   combatState: CombatStateMessage | undefined;
   telegraphs: readonly CombatTelegraphMessage[];
+  dialogueNode: DialogueNodeMessage | undefined;
+  dialogueError: ErrorCode | undefined;
   serverTimeOffsetMs: number;
 }
 
@@ -147,6 +162,9 @@ export interface VillagePresence {
   selectTarget(targetEntityId: string): void;
   basicAttack(): void;
   useAbility(abilityId: string): void;
+  interact(interactiveId: string): void;
+  selectDialogueChoice(npcId: string, nodeId: string, choiceId: string): void;
+  closeDialogue(): void;
   setSimulatedLatency(latencyMs: number): void;
   subscribe(listener: (snapshot: VillagePresenceSnapshot) => void): () => void;
   close(): Promise<void>;
@@ -180,6 +198,8 @@ export async function connectDevelopmentVillage(
   let combatResult: CombatResult | undefined;
   let combatState: CombatStateMessage | undefined;
   let telegraphs: CombatTelegraphMessage[] = [];
+  let dialogueNode: DialogueNodeMessage | undefined;
+  let dialogueError: ErrorCode | undefined;
   let serverTimeOffsetMs = 0;
   const serverClock = new ServerTimeEstimator();
 
@@ -244,6 +264,8 @@ export async function connectDevelopmentVillage(
       combatResult,
       combatState,
       telegraphs,
+      dialogueNode,
+      dialogueError,
       serverTimeOffsetMs,
     };
     afterNetworkDelay(() => {
@@ -313,6 +335,27 @@ export async function connectDevelopmentVillage(
     if (!combatEventSchema.safeParse(unsafeEvent).success) return;
     publish(room.state);
   });
+  room.onMessage<unknown>(SERVER_MESSAGES.dialogueNode, (unsafeNode) => {
+    const node = dialogueNodeSchema.safeParse(unsafeNode);
+    if (!node.success) return;
+    dialogueNode = node.data;
+    dialogueError = undefined;
+    publish(room.state);
+  });
+  room.onMessage<unknown>(SERVER_MESSAGES.dialogueClosed, () => {
+    dialogueNode = undefined;
+    dialogueError = undefined;
+    publish(room.state);
+  });
+  room.onMessage<unknown>(SERVER_MESSAGES.dialogueRejected, (unsafeError) => {
+    const rejection = z
+      .object({ code: errorCodeSchema })
+      .strict()
+      .safeParse(unsafeError);
+    if (!rejection.success) return;
+    dialogueError = rejection.data.code;
+    publish(room.state);
+  });
   room.onDrop(() => {
     connectionStatus = "reconnecting";
     publish(room.state);
@@ -357,6 +400,34 @@ export async function connectDevelopmentVillage(
           actionId: crypto.randomUUID(),
           abilityId,
           targetEntityId,
+        }),
+      );
+    },
+    interact(interactiveId) {
+      afterNetworkDelay(() =>
+        room.send(CLIENT_MESSAGES.interaction, {
+          actionId: crypto.randomUUID(),
+          interactiveId,
+        }),
+      );
+    },
+    selectDialogueChoice(npcId, nodeId, choiceId) {
+      afterNetworkDelay(() =>
+        room.send(CLIENT_MESSAGES.dialogueChoice, {
+          actionId: crypto.randomUUID(),
+          npcId,
+          nodeId,
+          choiceId,
+        }),
+      );
+    },
+    closeDialogue() {
+      dialogueNode = undefined;
+      dialogueError = undefined;
+      publish(room.state);
+      afterNetworkDelay(() =>
+        room.send(CLIENT_MESSAGES.dialogueClose, {
+          actionId: crypto.randomUUID(),
         }),
       );
     },

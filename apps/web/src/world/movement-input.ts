@@ -31,12 +31,18 @@ export class MovementInput {
   readonly #pressed = new Set<MovementBinding>();
   readonly #canvas: HTMLCanvasElement;
   #basicAttackRequested = false;
+  #interactionRequested = false;
   readonly #abilityRequests = new Set<1 | 2 | 3 | 4>();
 
   readonly #handleKeyDown = (event: KeyboardEvent) => {
     if (event.code === "Digit1") {
       event.preventDefault();
       this.#basicAttackRequested = true;
+      return;
+    }
+    if (event.code === "KeyE") {
+      event.preventDefault();
+      this.#interactionRequested = true;
       return;
     }
     const abilitySlot = {
@@ -69,6 +75,7 @@ export class MovementInput {
     this.#pressed.clear();
     this.#abilityRequests.clear();
     this.#basicAttackRequested = false;
+    this.#interactionRequested = false;
   };
 
   constructor(canvas: HTMLCanvasElement) {
@@ -93,6 +100,12 @@ export class MovementInput {
   consumeBasicAttack(): boolean {
     const requested = this.#basicAttackRequested;
     this.#basicAttackRequested = false;
+    return requested;
+  }
+
+  consumeInteraction(): boolean {
+    const requested = this.#interactionRequested;
+    this.#interactionRequested = false;
     return requested;
   }
 

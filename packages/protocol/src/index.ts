@@ -15,6 +15,13 @@ export const ERROR_CODES = {
   abilityNotFound: "ABILITY_NOT_FOUND",
   staleAction: "STALE_ACTION",
   actionInterrupted: "ACTION_INTERRUPTED",
+  invalidInteraction: "INVALID_INTERACTION",
+  interactionNotFound: "INTERACTION_NOT_FOUND",
+  interactionOutOfRange: "INTERACTION_OUT_OF_RANGE",
+  interactionRateLimited: "INTERACTION_RATE_LIMITED",
+  dialogueBlocked: "DIALOGUE_BLOCKED",
+  dialogueChoiceInvalid: "DIALOGUE_CHOICE_INVALID",
+  dialogueNotActive: "DIALOGUE_NOT_ACTIVE",
   invalidPlayTicket: "INVALID_PLAY_TICKET",
   playTicketExpired: "PLAY_TICKET_EXPIRED",
   playTicketReplayed: "PLAY_TICKET_REPLAYED",
@@ -31,6 +38,9 @@ export const CLIENT_MESSAGES = {
   targetSelection: "target_selection",
   basicAttack: "basic_attack",
   ability: "ability",
+  interaction: "interaction",
+  dialogueChoice: "dialogue_choice",
+  dialogueClose: "dialogue_close",
 } as const;
 
 export const SERVER_MESSAGES = {
@@ -44,6 +54,9 @@ export const SERVER_MESSAGES = {
   combatState: "combat_state",
   combatTelegraph: "combat_telegraph",
   rewardSummary: "reward_summary",
+  dialogueNode: "dialogue_node",
+  dialogueClosed: "dialogue_closed",
+  dialogueRejected: "dialogue_rejected",
 } as const;
 
 export interface MovementIntention {
@@ -176,4 +189,29 @@ export interface CombatTelegraphMessage {
 export interface RewardSummaryMessage {
   sourceMonsterId: string;
   items: { itemId: string; quantity: number }[];
+}
+
+export interface InteractionIntention {
+  actionId: string;
+  interactiveId: string;
+}
+
+export interface DialogueChoiceIntention {
+  actionId: string;
+  npcId: string;
+  nodeId: string;
+  choiceId: string;
+}
+
+export interface DialogueCloseIntention {
+  actionId: string;
+}
+
+export interface DialogueNodeMessage {
+  dialogueId: string;
+  npcId: string;
+  nodeId: string;
+  speaker: string;
+  text: string;
+  choices: { id: string; label: string }[];
 }

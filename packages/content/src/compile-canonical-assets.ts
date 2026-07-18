@@ -2,6 +2,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 import { characterManifestSchema } from "./character-manifest.js";
 import { compileClientCombatCatalog } from "./combat.js";
+import {
+  compileClientDialogueCatalog,
+  validateDialogueInteractiveBindings,
+} from "./dialogue.js";
 import { contentSchema } from "./index.js";
 import { compileTiledMap } from "./maps.js";
 
@@ -19,13 +23,19 @@ function moduleSource(value: unknown): string {
 async function compileCanonicalAssets(): Promise<void> {
   const canonicalContent = await readJson("content/foundation.json");
   const parsedContent = contentSchema.safeParse(canonicalContent);
-  if (!parsedContent.success || !parsedContent.data.combat) {
+  if (
+    !parsedContent.success ||
+    !parsedContent.data.combat ||
+    !parsedContent.data.dialogue
+  ) {
     throw new Error(
-      `Canonical combat content failed:\n${parsedContent.success ? "Combat catalog is missing" : parsedContent.error.message}`,
+      `Canonical combat/dialogue content failed:\n${parsedContent.success ? "Combat or dialogue catalog is missing" : parsedContent.error.message}`,
     );
   }
   const parsedCombat = parsedContent.data.combat;
+  const parsedDialogue = parsedContent.data.dialogue;
   const clientCombat = compileClientCombatCatalog(parsedCombat);
+  const clientDialogue = compileClientDialogueCatalog(parsedDialogue);
 
   const manifest = characterManifestSchema.safeParse(
     await readJson("manifests/village-character.json"),
@@ -45,6 +55,17 @@ async function compileCanonicalAssets(): Promise<void> {
   if (!map.success) {
     throw new Error(
       `Village map compilation failed:\n${map.issues
+        .map((issue) => `${issue.path}: ${issue.message}`)
+        .join("\n")}`,
+    );
+  }
+  const dialogueIssues = validateDialogueInteractiveBindings(
+    parsedDialogue,
+    map.server.interactives.map((interactive) => interactive.id),
+  );
+  if (dialogueIssues.length > 0) {
+    throw new Error(
+      `Dialogue map bindings failed:\n${dialogueIssues
         .map((issue) => `${issue.path}: ${issue.message}`)
         .join("\n")}`,
     );
@@ -75,6 +96,14 @@ async function compileCanonicalAssets(): Promise<void> {
     writeFile(
       new URL("village-combat.js", artifactDirectory),
       moduleSource(clientCombat),
+    ),
+    writeFile(
+      new URL("village-dialogue-server.js", artifactDirectory),
+      moduleSource(parsedDialogue),
+    ),
+    writeFile(
+      new URL("village-dialogue.js", artifactDirectory),
+      moduleSource(clientDialogue),
     ),
   ]);
 }

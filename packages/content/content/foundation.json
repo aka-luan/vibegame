@@ -22,6 +22,17 @@
       "serverOnly": {
         "developmentOnly": false
       }
+    },
+    {
+      "id": "npc:elmira",
+      "tags": ["npc", "village"],
+      "references": [],
+      "clientVisible": {
+        "displayName": "Elmira"
+      },
+      "serverOnly": {
+        "developmentOnly": false
+      }
     }
   ],
   "combat": {
@@ -227,6 +238,68 @@
         "id": "loot:mossback_cache",
         "monsterId": "monster:mossback",
         "entries": [{ "id": "item:mossback_scale", "weight": 1 }]
+      }
+    ]
+  },
+  "dialogue": {
+    "schemaVersion": 1,
+    "npcs": [
+      {
+        "id": "npc:elmira",
+        "interactiveId": "notice_board",
+        "graphId": "dialogue:elmira_welcome",
+        "clientVisible": {
+          "displayName": "Elmira"
+        }
+      }
+    ],
+    "graphs": [
+      {
+        "id": "dialogue:elmira_welcome",
+        "npcId": "npc:elmira",
+        "rootNodeId": "welcome",
+        "nodes": [
+          {
+            "id": "welcome",
+            "speaker": "Elmira",
+            "text": "The forest trail is restless today. Will you lend a hand?",
+            "choices": [
+              {
+                "id": "ask_need",
+                "label": "What happened in the forest?",
+                "nextNodeId": "forest_need"
+              },
+              {
+                "id": "say_goodbye",
+                "label": "Not today. Goodbye."
+              }
+            ]
+          },
+          {
+            "id": "forest_need",
+            "speaker": "Elmira",
+            "text": "The mossbacks have wandered close to the path. Keep your eyes open and return when you know more.",
+            "choices": [
+              {
+                "id": "ready_to_help",
+                "label": "I will look into it.",
+                "nextNodeId": "farewell",
+                "condition": { "kind": "minimum_level", "level": 1 }
+              },
+              {
+                "id": "ask_later",
+                "label": "I need more training first.",
+                "nextNodeId": "farewell"
+              }
+            ]
+          },
+          {
+            "id": "farewell",
+            "speaker": "Elmira",
+            "text": "Safe travels, ranger.",
+            "choices": []
+          }
+        ]
       }
     ]
   }

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { combatCatalogSchema } from "./combat.js";
+import { dialogueCatalogSchema } from "./dialogue.js";
 
 const namespacedId = z
   .string()
@@ -26,6 +27,7 @@ export const contentSchema = z
     schemaVersion: z.literal(1),
     definitions: z.array(contentDefinition),
     combat: combatCatalogSchema.optional(),
+    dialogue: dialogueCatalogSchema.optional(),
   })
   .superRefine((content, context) => {
     const identifiers = new Set(
@@ -62,6 +64,19 @@ export const contentSchema = z
         }
       });
     });
+
+    const dialogue = content.dialogue;
+    if (dialogue) {
+      dialogue.npcs.forEach((npc, npcIndex) => {
+        if (!identifiers.has(npc.id)) {
+          context.addIssue({
+            code: "custom",
+            path: ["dialogue", "npcs", npcIndex, "id"],
+            message: `Missing NPC content reference: ${npc.id}`,
+          });
+        }
+      });
+    }
   });
 
 export interface ContentValidationIssue {

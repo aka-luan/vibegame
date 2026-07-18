@@ -1,5 +1,6 @@
 import villageMap from "@gameish/content/village-map";
 import villageCombat from "@gameish/content/village-combat";
+import villageDialogue from "@gameish/content/village-dialogue";
 import type { PublicPlayerPresence } from "@gameish/protocol";
 import villageCharacter from "@gameish/content/village-character";
 import { moveCharacterFoot, PLAYER_MOVEMENT } from "@gameish/world";
@@ -127,11 +128,23 @@ class VillageScene extends Phaser.Scene {
 
     const hint = villageMap.interactionHints[0];
     if (hint) {
+      const npcBody = this.add
+        .rectangle(0, -12, 14, 24, 0x6f87b8)
+        .setStrokeStyle(2, 0x17251c);
+      const npcName = this.add
+        .text(0, -33, villageDialogue.npcs[0]?.displayName ?? "NPC", {
+          color: "#fff4b3",
+          backgroundColor: "rgb(13 23 17 / 75%)",
+          fontFamily: "system-ui, sans-serif",
+          fontSize: "7px",
+          padding: { x: 2, y: 1 },
+        })
+        .setOrigin(0.5, 1);
       const marker = this.add
-        .circle(0, 0, 9, 0xffe27a, 0.95)
+        .circle(0, 3, 9, 0xffe27a, 0.95)
         .setStrokeStyle(2, 0x1b3022);
       const label = this.add
-        .text(0, -15, "E", {
+        .text(0, 3, "E", {
           color: "#17251c",
           backgroundColor: "#ffe27a",
           fontFamily: "system-ui, sans-serif",
@@ -141,7 +154,7 @@ class VillageScene extends Phaser.Scene {
         })
         .setOrigin(0.5, 1);
       this.#indicator = this.add
-        .container(hint.x, hint.y, [marker, label])
+        .container(hint.x, hint.y, [npcBody, npcName, marker, label])
         .setDepth(8);
     }
 
@@ -166,6 +179,19 @@ class VillageScene extends Phaser.Scene {
   override update(time: number, delta: number): void {
     if (!this.#input) return;
     const direction = this.#input.direction();
+    if (this.#input.consumeInteraction()) {
+      const hint = villageMap.interactionHints[0];
+      const localPlayer = this.#latestPresence?.players.find(
+        (player) => player.entityId === this.#latestPresence?.localEntityId,
+      );
+      if (
+        hint &&
+        localPlayer &&
+        Math.hypot(localPlayer.x - hint.x, localPlayer.y - hint.y) <= 46
+      ) {
+        this.#options.presence.interact(hint.id);
+      }
+    }
     if (this.#input.consumeBasicAttack()) {
       this.#options.presence.basicAttack();
     }

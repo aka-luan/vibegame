@@ -3,6 +3,7 @@ import { MapSchema, Schema, type } from "@colyseus/schema";
 import villageCombat from "@gameish/content/village-combat-server";
 import villageCharacter from "@gameish/content/village-character";
 import villageMap from "@gameish/content/village-map-server";
+import villageDialogue from "@gameish/content/village-dialogue-server";
 import type { CombatCatalog, CombatEffect } from "@gameish/content/combat";
 import {
   CLIENT_MESSAGES,
@@ -36,6 +37,11 @@ import {
   ParticipationWindow,
   type ParticipationCandidate,
 } from "../rewards/participation.js";
+import {
+  resolveDialogueChoice,
+  resolveDialogueNode,
+  type DialogueCharacterState,
+} from "../dialogue/resolver.js";
 
 const joinOptionsSchema = z
   .object({ ticket: z.string().min(1).max(200) })
@@ -66,6 +72,23 @@ const abilitySchema = z
     targetEntityId: z.string().trim().min(1).max(80),
   })
   .strict();
+const interactionSchema = z
+  .object({
+    actionId: z.string().trim().min(1).max(64),
+    interactiveId: z.string().trim().min(1).max(80),
+  })
+  .strict();
+const dialogueChoiceSchema = z
+  .object({
+    actionId: z.string().trim().min(1).max(64),
+    npcId: z.string().trim().min(1).max(80),
+    nodeId: z.string().trim().min(1).max(80),
+    choiceId: z.string().trim().min(1).max(80),
+  })
+  .strict();
+const dialogueCloseSchema = z
+  .object({ actionId: z.string().trim().min(1).max(64) })
+  .strict();
 
 const MAX_MOVEMENT_MESSAGE_BYTES = 256;
 const MAX_COMBAT_MESSAGE_BYTES = 256;
@@ -74,6 +97,10 @@ const MAX_INTENTION_VIOLATIONS = 5;
 const MAX_PENDING_INTENTIONS = 120;
 const REWARD_PROXIMITY_RADIUS = 180;
 const REWARD_AFK_AFTER_MS = 5_000;
+const INTERACTION_RADIUS = 56;
+const INTERACTION_RATE_LIMIT_MS = 250;
+const DIALOGUE_ACTION_RATE_LIMIT_MS = 100;
+const MAX_DIALOGUE_MESSAGE_BYTES = 256;
 
 class PublicAppearance extends Schema {
   @type("string")
@@ -183,6 +210,16 @@ export function createVillageRoom(
       string,
       { characterId: string; partyId: string | undefined }
     >();
+    readonly #characterDialogueState = new Map<
+      string,
+      DialogueCharacterState
+    >();
+    readonly #dialogueSessions = new Map<
+      string,
+      { npcId: string; nodeId: string }
+    >();
+    readonly #lastInteractionAtMs = new Map<string, number>();
+    readonly #lastDialogueActionAtMs = new Map<string, number>();
     readonly #joinedAtMs = new Map<string, number>();
     readonly #lastActivityAtMs = new Map<string, number>();
     readonly #disconnectedSessions = new Set<string>();
@@ -420,11 +457,187 @@ export function createVillageRoom(
           this.#handleAbility(client, unsafeIntention);
         },
       );
+      this.onMessage(
+        CLIENT_MESSAGES.interaction,
+        (client, unsafeIntention: unknown) => {
+          this.#handleInteraction(client, unsafeIntention);
+        },
+      );
+      this.onMessage(
+        CLIENT_MESSAGES.dialogueChoice,
+        (client, unsafeIntention: unknown) => {
+          this.#handleDialogueChoice(client, unsafeIntention);
+        },
+      );
+      this.onMessage(
+        CLIENT_MESSAGES.dialogueClose,
+        (client, unsafeIntention: unknown) => {
+          const intention = dialogueCloseSchema.safeParse(unsafeIntention);
+          if (!intention.success) {
+            this.#sendDialogueRejected(client, ERROR_CODES.invalidInteraction);
+            return;
+          }
+          this.#dialogueSessions.delete(client.sessionId);
+        },
+      );
 
       this.setSimulationInterval(
         () => this.#simulateFixedStep(),
         PLAYER_MOVEMENT.fixedStepMs,
       );
+    }
+
+    #handleInteraction(client: Client, unsafeIntention: unknown): void {
+      const encodedIntention = JSON.stringify(unsafeIntention);
+      const intention = interactionSchema.safeParse(unsafeIntention);
+      const player = this.state.players.get(client.sessionId);
+      const character = this.#characterDialogueState.get(client.sessionId);
+      if (
+        encodedIntention === undefined ||
+        Buffer.byteLength(encodedIntention) > MAX_DIALOGUE_MESSAGE_BYTES ||
+        !intention.success ||
+        !player ||
+        !character
+      ) {
+        this.#sendDialogueRejected(client, ERROR_CODES.invalidInteraction);
+        return;
+      }
+
+      const now = this.state.serverTimeMs;
+      const lastInteractionAtMs = this.#lastInteractionAtMs.get(
+        client.sessionId,
+      );
+      if (
+        lastInteractionAtMs !== undefined &&
+        now < lastInteractionAtMs + INTERACTION_RATE_LIMIT_MS
+      ) {
+        this.#sendDialogueRejected(client, ERROR_CODES.interactionRateLimited);
+        return;
+      }
+      this.#lastInteractionAtMs.set(client.sessionId, now);
+
+      const interactive = villageMap.interactives.find(
+        (candidate) => candidate.id === intention.data.interactiveId,
+      );
+      const npc = villageDialogue.npcs.find(
+        (candidate) => candidate.interactiveId === intention.data.interactiveId,
+      );
+      if (!interactive || !npc) {
+        this.#sendDialogueRejected(client, ERROR_CODES.interactionNotFound);
+        return;
+      }
+      const interactiveX = interactive.x + interactive.width / 2;
+      const interactiveY = interactive.y + interactive.height / 2;
+      if (
+        Math.hypot(player.x - interactiveX, player.y - interactiveY) >
+        INTERACTION_RADIUS
+      ) {
+        this.#sendDialogueRejected(client, ERROR_CODES.interactionOutOfRange);
+        return;
+      }
+
+      const graph = villageDialogue.graphs.find(
+        (candidate) => candidate.id === npc.graphId,
+      );
+      if (!graph) {
+        this.#sendDialogueRejected(client, ERROR_CODES.dialogueBlocked);
+        return;
+      }
+      const resolved = resolveDialogueNode(
+        villageDialogue,
+        npc.id,
+        graph.rootNodeId,
+        character,
+      );
+      if (!resolved.success) {
+        this.#sendDialogueRejected(
+          client,
+          resolved.reason === "blocked"
+            ? ERROR_CODES.dialogueBlocked
+            : ERROR_CODES.interactionNotFound,
+        );
+        return;
+      }
+      this.#dialogueSessions.set(client.sessionId, {
+        npcId: npc.id,
+        nodeId: resolved.node.nodeId,
+      });
+      client.send(SERVER_MESSAGES.dialogueNode, resolved.node);
+    }
+
+    #handleDialogueChoice(client: Client, unsafeIntention: unknown): void {
+      const encodedIntention = JSON.stringify(unsafeIntention);
+      const intention = dialogueChoiceSchema.safeParse(unsafeIntention);
+      const character = this.#characterDialogueState.get(client.sessionId);
+      const session = this.#dialogueSessions.get(client.sessionId);
+      if (
+        encodedIntention === undefined ||
+        Buffer.byteLength(encodedIntention) > MAX_DIALOGUE_MESSAGE_BYTES ||
+        !intention.success ||
+        !character
+      ) {
+        this.#sendDialogueRejected(client, ERROR_CODES.invalidInteraction);
+        return;
+      }
+      if (!session) {
+        this.#sendDialogueRejected(client, ERROR_CODES.dialogueNotActive);
+        return;
+      }
+      const now = this.state.serverTimeMs;
+      const lastDialogueActionAtMs = this.#lastDialogueActionAtMs.get(
+        client.sessionId,
+      );
+      if (
+        lastDialogueActionAtMs !== undefined &&
+        now < lastDialogueActionAtMs + DIALOGUE_ACTION_RATE_LIMIT_MS
+      ) {
+        this.#sendDialogueRejected(client, ERROR_CODES.interactionRateLimited);
+        return;
+      }
+      this.#lastDialogueActionAtMs.set(client.sessionId, now);
+      if (
+        session.npcId !== intention.data.npcId ||
+        session.nodeId !== intention.data.nodeId
+      ) {
+        this.#sendDialogueRejected(client, ERROR_CODES.dialogueChoiceInvalid);
+        return;
+      }
+
+      const resolved = resolveDialogueChoice(
+        villageDialogue,
+        session.npcId,
+        session.nodeId,
+        intention.data.choiceId,
+        character,
+      );
+      if (!resolved.success) {
+        this.#sendDialogueRejected(
+          client,
+          resolved.reason === "blocked"
+            ? ERROR_CODES.dialogueBlocked
+            : ERROR_CODES.dialogueChoiceInvalid,
+        );
+        return;
+      }
+      if ("closed" in resolved) {
+        this.#dialogueSessions.delete(client.sessionId);
+        client.send(SERVER_MESSAGES.dialogueClosed, {
+          npcId: session.npcId,
+        });
+        return;
+      }
+      this.#dialogueSessions.set(client.sessionId, {
+        npcId: session.npcId,
+        nodeId: resolved.node.nodeId,
+      });
+      client.send(SERVER_MESSAGES.dialogueNode, resolved.node);
+    }
+
+    #sendDialogueRejected(
+      client: Client,
+      code: (typeof ERROR_CODES)[keyof typeof ERROR_CODES],
+    ): void {
+      client.send(SERVER_MESSAGES.dialogueRejected, { code });
     }
 
     #handleAbility(client: Client, unsafeIntention: unknown): void {
@@ -633,7 +846,12 @@ export function createVillageRoom(
       this.state.players.set(client.sessionId, player);
       this.#playerIdentity.set(client.sessionId, {
         characterId: consumption.admission.characterId,
-        partyId: undefined,
+        partyId: consumption.admission.partyId,
+      });
+      this.#characterDialogueState.set(client.sessionId, {
+        level: 1,
+        flags: new Set(),
+        completedQuestIds: new Set(),
       });
       this.#joinedAtMs.set(client.sessionId, this.state.serverTimeMs);
       this.#lastActivityAtMs.delete(consumption.admission.characterId);
@@ -663,6 +881,10 @@ export function createVillageRoom(
       this.#lastProcessedSequences.delete(client.sessionId);
       this.#playerCombat.delete(client.sessionId);
       this.#playerIdentity.delete(client.sessionId);
+      this.#characterDialogueState.delete(client.sessionId);
+      this.#dialogueSessions.delete(client.sessionId);
+      this.#lastInteractionAtMs.delete(client.sessionId);
+      this.#lastDialogueActionAtMs.delete(client.sessionId);
       this.#joinedAtMs.delete(client.sessionId);
       this.#disconnectedSessions.delete(client.sessionId);
       this.state.players.delete(client.sessionId);
