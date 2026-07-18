@@ -14,6 +14,8 @@ import {
   type MovementIntention,
   type PublicMonsterPresence,
   type PublicPlayerPresence,
+  type QuestRewardMessage,
+  type QuestStateMessage,
 } from "@gameish/protocol";
 import { ServerTimeEstimator } from "./movement-synchronizer.js";
 
@@ -119,6 +121,28 @@ const dialogueNodeSchema = z
     ),
   })
   .strict();
+const questStateSchema = z
+  .object({
+    questId: z.string().min(1),
+    status: z.enum(["available", "active", "ready", "completed"]),
+    progress: z.number().int().nonnegative(),
+    requiredCount: z.number().int().positive(),
+    title: z.string().min(1),
+    description: z.string().min(1),
+    guidance: z
+      .object({ label: z.string().min(1), targetId: z.string().min(1) })
+      .strict(),
+  })
+  .strict();
+const questRewardSchema = z
+  .object({
+    questId: z.string().min(1),
+    itemId: z.string().min(1),
+    quantity: z.number().int().positive(),
+    experience: z.number().int().nonnegative(),
+    currency: z.number().int().nonnegative(),
+  })
+  .strict();
 
 type SynchronizedPlayer = Omit<PublicPlayerPresence, "entityId">;
 
@@ -152,6 +176,9 @@ export interface VillagePresenceSnapshot {
   telegraphs: readonly CombatTelegraphMessage[];
   dialogueNode: DialogueNodeMessage | undefined;
   dialogueError: ErrorCode | undefined;
+  questState: QuestStateMessage | undefined;
+  questReward: QuestRewardMessage | undefined;
+  questError: ErrorCode | undefined;
   serverTimeOffsetMs: number;
 }
 
@@ -200,6 +227,9 @@ export async function connectDevelopmentVillage(
   let telegraphs: CombatTelegraphMessage[] = [];
   let dialogueNode: DialogueNodeMessage | undefined;
   let dialogueError: ErrorCode | undefined;
+  let questState: QuestStateMessage | undefined;
+  let questReward: QuestRewardMessage | undefined;
+  let questError: ErrorCode | undefined;
   let serverTimeOffsetMs = 0;
   const serverClock = new ServerTimeEstimator();
 
@@ -266,6 +296,9 @@ export async function connectDevelopmentVillage(
       telegraphs,
       dialogueNode,
       dialogueError,
+      questState,
+      questReward,
+      questError,
       serverTimeOffsetMs,
     };
     afterNetworkDelay(() => {
@@ -356,6 +389,29 @@ export async function connectDevelopmentVillage(
     dialogueError = rejection.data.code;
     publish(room.state);
   });
+  room.onMessage<unknown>(SERVER_MESSAGES.questState, (unsafeState) => {
+    const state = questStateSchema.safeParse(unsafeState);
+    if (!state.success) return;
+    questState = state.data;
+    questError = undefined;
+    publish(room.state);
+  });
+  room.onMessage<unknown>(SERVER_MESSAGES.questReward, (unsafeReward) => {
+    const reward = questRewardSchema.safeParse(unsafeReward);
+    if (!reward.success) return;
+    questReward = reward.data;
+    publish(room.state);
+  });
+  room.onMessage<unknown>(SERVER_MESSAGES.questRejected, (unsafeError) => {
+    const rejection = z
+      .object({ code: errorCodeSchema })
+      .strict()
+      .safeParse(unsafeError);
+    if (!rejection.success) return;
+    questError = rejection.data.code;
+    publish(room.state);
+  });
+  room.send(CLIENT_MESSAGES.questStateRequest);
   room.onDrop(() => {
     connectionStatus = "reconnecting";
     publish(room.state);

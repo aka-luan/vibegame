@@ -5,6 +5,19 @@ const namespacedId = (namespace: string) =>
 
 const localId = z.string().regex(/^[a-z][a-z0-9_]*$/);
 
+const questStatusSchema = z.enum(["available", "active", "ready", "completed"]);
+
+const questActionSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("accept_quest"),
+    questId: namespacedId("quest"),
+  }),
+  z.object({
+    kind: z.literal("complete_quest"),
+    questId: namespacedId("quest"),
+  }),
+]);
+
 export const dialogueConditionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("always") }),
   z.object({
@@ -16,6 +29,11 @@ export const dialogueConditionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("completed_quest"),
     questId: namespacedId("quest"),
   }),
+  z.object({
+    kind: z.literal("quest_status"),
+    questId: namespacedId("quest"),
+    status: questStatusSchema,
+  }),
 ]);
 
 const dialogueChoiceSchema = z.object({
@@ -23,6 +41,7 @@ const dialogueChoiceSchema = z.object({
   label: z.string().trim().min(1).max(160),
   nextNodeId: localId.optional(),
   condition: dialogueConditionSchema.default({ kind: "always" }),
+  questAction: questActionSchema.optional(),
 });
 
 const dialogueNodeSchema = z.object({
@@ -183,6 +202,7 @@ export type DialogueGraph = DialogueCatalog["graphs"][number];
 export type DialogueNode = DialogueGraph["nodes"][number];
 export type DialogueChoice = DialogueNode["choices"][number];
 export type DialogueCondition = z.infer<typeof dialogueConditionSchema>;
+export type DialogueQuestAction = z.infer<typeof questActionSchema>;
 
 export interface ClientDialogueCatalog {
   schemaVersion: 1;

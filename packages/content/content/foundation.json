@@ -33,6 +33,28 @@
       "serverOnly": {
         "developmentOnly": false
       }
+    },
+    {
+      "id": "quest:forest_mossbacks",
+      "tags": ["quest", "forest"],
+      "references": ["npc:elmira", "monster:mossback", "item:mossback_scale"],
+      "clientVisible": {
+        "displayName": "Mossbacks Near the Path"
+      },
+      "serverOnly": {
+        "developmentOnly": false
+      }
+    },
+    {
+      "id": "monster:mossback",
+      "tags": ["monster", "forest"],
+      "references": [],
+      "clientVisible": {
+        "displayName": "Mossback"
+      },
+      "serverOnly": {
+        "developmentOnly": false
+      }
     }
   ],
   "combat": {
@@ -284,12 +306,30 @@
                 "id": "ready_to_help",
                 "label": "I will look into it.",
                 "nextNodeId": "farewell",
-                "condition": { "kind": "minimum_level", "level": 1 }
+                "condition": { "kind": "minimum_level", "level": 1 },
+                "questAction": {
+                  "kind": "accept_quest",
+                  "questId": "quest:forest_mossbacks"
+                }
               },
               {
                 "id": "ask_later",
                 "label": "I need more training first.",
                 "nextNodeId": "farewell"
+              },
+              {
+                "id": "report_success",
+                "label": "The mossbacks are dealt with.",
+                "nextNodeId": "farewell",
+                "condition": {
+                  "kind": "quest_status",
+                  "questId": "quest:forest_mossbacks",
+                  "status": "ready"
+                },
+                "questAction": {
+                  "kind": "complete_quest",
+                  "questId": "quest:forest_mossbacks"
+                }
               }
             ]
           },
@@ -300,6 +340,36 @@
             "choices": []
           }
         ]
+      }
+    ]
+  },
+  "quests": {
+    "schemaVersion": 1,
+    "quests": [
+      {
+        "id": "quest:forest_mossbacks",
+        "clientVisible": {
+          "title": "Mossbacks Near the Path",
+          "description": "Defeat a mossback that has wandered close to the forest path.",
+          "requiredCount": 1,
+          "guidance": {
+            "label": "Forest path",
+            "targetId": "monster:mossback"
+          }
+        },
+        "serverOnly": {
+          "objective": {
+            "kind": "kill",
+            "targetId": "monster:mossback",
+            "requiredCount": 1
+          },
+          "reward": {
+            "itemId": "item:mossback_scale",
+            "quantity": 1,
+            "experience": 100,
+            "currency": 10
+          }
+        }
       }
     ]
   }

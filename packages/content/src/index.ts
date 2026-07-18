@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { combatCatalogSchema } from "./combat.js";
 import { dialogueCatalogSchema } from "./dialogue.js";
+import { questCatalogSchema } from "./quests.js";
 
 const namespacedId = z
   .string()
@@ -28,6 +29,7 @@ export const contentSchema = z
     definitions: z.array(contentDefinition),
     combat: combatCatalogSchema.optional(),
     dialogue: dialogueCatalogSchema.optional(),
+    quests: questCatalogSchema.optional(),
   })
   .superRefine((content, context) => {
     const identifiers = new Set(
@@ -73,6 +75,108 @@ export const contentSchema = z
             code: "custom",
             path: ["dialogue", "npcs", npcIndex, "id"],
             message: `Missing NPC content reference: ${npc.id}`,
+          });
+        }
+      });
+      dialogue.graphs.forEach((graph, graphIndex) => {
+        graph.nodes.forEach((node, nodeIndex) => {
+          const validateQuestReference = (
+            questId: string,
+            path: (string | number)[],
+          ) => {
+            if (identifiers.has(questId)) return;
+            context.addIssue({
+              code: "custom",
+              path,
+              message: `Dialogue references an unknown quest: ${questId}`,
+            });
+          };
+          const condition = node.condition;
+          if (
+            condition.kind === "completed_quest" ||
+            condition.kind === "quest_status"
+          ) {
+            validateQuestReference(condition.questId, [
+              "dialogue",
+              "graphs",
+              graphIndex,
+              "nodes",
+              nodeIndex,
+              "condition",
+              "questId",
+            ]);
+          }
+          node.choices.forEach((choice, choiceIndex) => {
+            if (
+              choice.condition.kind === "completed_quest" ||
+              choice.condition.kind === "quest_status"
+            ) {
+              validateQuestReference(choice.condition.questId, [
+                "dialogue",
+                "graphs",
+                graphIndex,
+                "nodes",
+                nodeIndex,
+                "choices",
+                choiceIndex,
+                "condition",
+                "questId",
+              ]);
+            }
+            if (choice.questAction) {
+              validateQuestReference(choice.questAction.questId, [
+                "dialogue",
+                "graphs",
+                graphIndex,
+                "nodes",
+                nodeIndex,
+                "choices",
+                choiceIndex,
+                "questAction",
+                "questId",
+              ]);
+            }
+          });
+        });
+      });
+    }
+
+    const quests = content.quests;
+    if (quests) {
+      quests.quests.forEach((quest, questIndex) => {
+        if (!identifiers.has(quest.id)) {
+          context.addIssue({
+            code: "custom",
+            path: ["quests", "quests", questIndex, "id"],
+            message: `Missing quest content reference: ${quest.id}`,
+          });
+        }
+        if (!identifiers.has(quest.serverOnly.objective.targetId)) {
+          context.addIssue({
+            code: "custom",
+            path: [
+              "quests",
+              "quests",
+              questIndex,
+              "serverOnly",
+              "objective",
+              "targetId",
+            ],
+            message: `Missing quest objective reference: ${quest.serverOnly.objective.targetId}`,
+          });
+        }
+        if (!identifiers.has(quest.serverOnly.reward.itemId)) {
+          context.addIssue({
+            code: "custom",
+            path: [
+              "quests",
+              "quests",
+              questIndex,
+              "serverOnly",
+              "reward",
+              "itemId",
+            ],
+            message: `Missing quest reward reference: ${quest.serverOnly.reward.itemId}`,
           });
         }
       });

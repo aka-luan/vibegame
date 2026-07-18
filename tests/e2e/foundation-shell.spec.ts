@@ -7,6 +7,11 @@ test("loads the production village build and moves by keyboard after focus hando
 
   const canvas = page.locator("#world-root canvas");
   await expect(canvas).toBeVisible();
+  const worldBox = await page.locator("#world-root").boundingBox();
+  const uiBox = await page.locator("#ui-root").boundingBox();
+  expect(worldBox).not.toBeNull();
+  expect(uiBox).not.toBeNull();
+  expect(uiBox!.x).toBeGreaterThanOrEqual(worldBox!.x + worldBox!.width - 1);
   await expect(
     page.getByRole("heading", { name: "Village presence test" }),
   ).toBeVisible();

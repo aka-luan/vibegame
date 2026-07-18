@@ -4,7 +4,9 @@ import villageCombat from "@gameish/content/village-combat-server";
 import villageCharacter from "@gameish/content/village-character";
 import villageMap from "@gameish/content/village-map-server";
 import villageDialogue from "@gameish/content/village-dialogue-server";
+import villageQuests from "@gameish/content/village-quests-server";
 import type { CombatCatalog, CombatEffect } from "@gameish/content/combat";
+import type { DialogueQuestAction } from "@gameish/content/dialogue";
 import {
   CLIENT_MESSAGES,
   ERROR_CODES,
@@ -14,6 +16,8 @@ import {
   type CombatStateMessage,
   type CombatEffectFeedback,
   type MovementIntention,
+  type QuestRewardMessage,
+  type QuestStateMessage,
 } from "@gameish/protocol";
 import { moveCharacterFoot, PLAYER_MOVEMENT } from "@gameish/world";
 import { z } from "zod";
@@ -42,6 +46,12 @@ import {
   resolveDialogueNode,
   type DialogueCharacterState,
 } from "../dialogue/resolver.js";
+import {
+  InMemoryQuestPersistence,
+  type QuestPersistence,
+  type QuestReward,
+} from "../quests/persistence.js";
+import type { QuestSnapshot } from "../quests/state.js";
 
 const joinOptionsSchema = z
   .object({ ticket: z.string().min(1).max(200) })
@@ -185,6 +195,7 @@ export function createVillageRoom(
     rng?: () => number;
     rewardRng?: () => number;
     rewardPersistence?: RewardPersistence;
+    questPersistence?: QuestPersistence;
     recordLifecycle?: (
       event: "disconnected" | "reconnected" | "removed",
     ) => void;
@@ -205,6 +216,12 @@ export function createVillageRoom(
     readonly #rewardRng = options.rewardRng ?? options.rng ?? Math.random;
     readonly #rewardPersistence =
       options.rewardPersistence ?? new InMemoryRewardPersistence();
+    readonly #questPersistence =
+      options.questPersistence ??
+      new InMemoryQuestPersistence("quest:forest_mossbacks");
+    readonly #questDefinition = villageQuests.quests.find(
+      (quest) => quest.id === "quest:forest_mossbacks",
+    );
     readonly #playerCombat = new Map<string, PlayerCombatState>();
     readonly #playerIdentity = new Map<
       string,
@@ -214,6 +231,7 @@ export function createVillageRoom(
       string,
       DialogueCharacterState
     >();
+    readonly #questSnapshots = new Map<string, QuestSnapshot>();
     readonly #dialogueSessions = new Map<
       string,
       { npcId: string; nodeId: string }
@@ -228,6 +246,9 @@ export function createVillageRoom(
     #monsterLifecycle!: MonsterLifecycle;
 
     override onCreate() {
+      if (!this.#questDefinition) {
+        throw new Error("Village quest definition is unavailable");
+      }
       const monster = this.#combatCatalog.monsters[0];
       const encounter = this.#combatCatalog.encounters[0];
       if (!monster || !encounter) {
@@ -466,7 +487,7 @@ export function createVillageRoom(
       this.onMessage(
         CLIENT_MESSAGES.dialogueChoice,
         (client, unsafeIntention: unknown) => {
-          this.#handleDialogueChoice(client, unsafeIntention);
+          void this.#handleDialogueChoice(client, unsafeIntention);
         },
       );
       this.onMessage(
@@ -480,6 +501,9 @@ export function createVillageRoom(
           this.#dialogueSessions.delete(client.sessionId);
         },
       );
+      this.onMessage(CLIENT_MESSAGES.questStateRequest, (client) => {
+        this.#sendQuestState(client);
+      });
 
       this.setSimulationInterval(
         () => this.#simulateFixedStep(),
@@ -565,7 +589,10 @@ export function createVillageRoom(
       client.send(SERVER_MESSAGES.dialogueNode, resolved.node);
     }
 
-    #handleDialogueChoice(client: Client, unsafeIntention: unknown): void {
+    async #handleDialogueChoice(
+      client: Client,
+      unsafeIntention: unknown,
+    ): Promise<void> {
       const encodedIntention = JSON.stringify(unsafeIntention);
       const intention = dialogueChoiceSchema.safeParse(unsafeIntention);
       const character = this.#characterDialogueState.get(client.sessionId);
@@ -619,6 +646,13 @@ export function createVillageRoom(
         );
         return;
       }
+      if (resolved.action) {
+        const actionResult = await this.#applyQuestAction(
+          client,
+          resolved.action,
+        );
+        if (!actionResult) return;
+      }
       if ("closed" in resolved) {
         this.#dialogueSessions.delete(client.sessionId);
         client.send(SERVER_MESSAGES.dialogueClosed, {
@@ -638,6 +672,140 @@ export function createVillageRoom(
       code: (typeof ERROR_CODES)[keyof typeof ERROR_CODES],
     ): void {
       client.send(SERVER_MESSAGES.dialogueRejected, { code });
+    }
+
+    async #applyQuestAction(
+      client: Client,
+      action: DialogueQuestAction,
+    ): Promise<boolean> {
+      const identity = this.#playerIdentity.get(client.sessionId);
+      const definition = this.#questDefinition;
+      if (!identity || !definition || action.questId !== definition.id) {
+        this.#sendQuestRejected(client, ERROR_CODES.questNotFound);
+        return false;
+      }
+      const reward: QuestReward | undefined =
+        action.kind === "complete_quest"
+          ? definition.serverOnly.reward
+          : undefined;
+      const completionId =
+        action.kind === "complete_quest"
+          ? `quest-completion:${identity.characterId}:${definition.id}`
+          : undefined;
+      try {
+        const result = await this.#questPersistence.transitionQuest({
+          characterId: identity.characterId,
+          questId: definition.id,
+          objective: definition.serverOnly.objective,
+          transition:
+            action.kind === "accept_quest"
+              ? { kind: "accept" }
+              : { kind: "complete" },
+          ...(reward === undefined ? {} : { reward }),
+          ...(completionId === undefined ? {} : { completionId }),
+        });
+        if (!result.applied) {
+          this.#sendQuestRejected(
+            client,
+            result.reason === "objective_mismatch"
+              ? ERROR_CODES.questObjectiveInvalid
+              : ERROR_CODES.questTransitionInvalid,
+          );
+          return false;
+        }
+        this.#setQuestSnapshot(client.sessionId, result.snapshot);
+        this.#sendQuestState(client);
+        if (action.kind === "complete_quest") {
+          client.send(SERVER_MESSAGES.questReward, {
+            questId: definition.id,
+            ...definition.serverOnly.reward,
+          } satisfies QuestRewardMessage);
+        }
+        return true;
+      } catch {
+        this.#sendQuestRejected(
+          client,
+          ERROR_CODES.questPersistenceUnavailable,
+        );
+        return false;
+      }
+    }
+
+    async #applyQuestObjectiveProgress(
+      characterId: string,
+      eventId: string,
+      targetId: string,
+    ): Promise<void> {
+      const sessionId = [...this.#playerIdentity.entries()].find(
+        ([, identity]) => identity.characterId === characterId,
+      )?.[0];
+      const definition = this.#questDefinition;
+      if (!sessionId || !definition) return;
+      const current = this.#questSnapshots.get(sessionId);
+      if (!current || current.status !== "active") return;
+      try {
+        const result = await this.#questPersistence.transitionQuest({
+          characterId,
+          questId: definition.id,
+          objective: definition.serverOnly.objective,
+          transition: { kind: "objective", eventId, targetId },
+        });
+        if (!result.applied) return;
+        this.#setQuestSnapshot(sessionId, result.snapshot);
+        const client = this.clients.find(
+          (candidate) => candidate.sessionId === sessionId,
+        );
+        if (client) this.#sendQuestState(client);
+      } catch {
+        const client = this.clients.find(
+          (candidate) => candidate.sessionId === sessionId,
+        );
+        if (client)
+          this.#sendQuestRejected(
+            client,
+            ERROR_CODES.questPersistenceUnavailable,
+          );
+      }
+    }
+
+    #setQuestSnapshot(sessionId: string, snapshot: QuestSnapshot): void {
+      this.#questSnapshots.set(sessionId, snapshot);
+      const character = this.#characterDialogueState.get(sessionId);
+      if (!character) return;
+      const questStatuses = new Map(character.questStatuses ?? []);
+      questStatuses.set(snapshot.questId, snapshot.status);
+      const completedQuestIds = new Set(character.completedQuestIds);
+      if (snapshot.status === "completed") {
+        completedQuestIds.add(snapshot.questId);
+      }
+      this.#characterDialogueState.set(sessionId, {
+        ...character,
+        completedQuestIds,
+        questStatuses,
+      });
+    }
+
+    #sendQuestState(client: Client): void {
+      const definition = this.#questDefinition;
+      const snapshot = this.#questSnapshots.get(client.sessionId);
+      if (!definition || !snapshot) return;
+      const message: QuestStateMessage = {
+        questId: definition.id,
+        status: snapshot.status,
+        progress: snapshot.progress,
+        requiredCount: definition.serverOnly.objective.requiredCount,
+        title: definition.clientVisible.title,
+        description: definition.clientVisible.description,
+        guidance: definition.clientVisible.guidance,
+      };
+      client.send(SERVER_MESSAGES.questState, message);
+    }
+
+    #sendQuestRejected(
+      client: Client,
+      code: (typeof ERROR_CODES)[keyof typeof ERROR_CODES],
+    ): void {
+      client.send(SERVER_MESSAGES.questRejected, { code });
     }
 
     #handleAbility(client: Client, unsafeIntention: unknown): void {
@@ -824,7 +992,7 @@ export function createVillageRoom(
       }
     }
 
-    override onJoin(client: Client, unsafeOptions: unknown) {
+    override async onJoin(client: Client, unsafeOptions: unknown) {
       const options = joinOptionsSchema.safeParse(unsafeOptions);
       if (!options.success) {
         throw new ServerError(4_221, ERROR_CODES.invalidJoinOptions);
@@ -848,10 +1016,16 @@ export function createVillageRoom(
         characterId: consumption.admission.characterId,
         partyId: consumption.admission.partyId,
       });
+      const questSnapshot = await this.#questPersistence.loadQuest(
+        consumption.admission.characterId,
+        this.#questDefinition?.id ?? "quest:forest_mossbacks",
+      );
+      this.#questSnapshots.set(client.sessionId, questSnapshot);
       this.#characterDialogueState.set(client.sessionId, {
         level: 1,
         flags: new Set(),
         completedQuestIds: new Set(),
+        questStatuses: new Map([[questSnapshot.questId, questSnapshot.status]]),
       });
       this.#joinedAtMs.set(client.sessionId, this.state.serverTimeMs);
       this.#lastActivityAtMs.delete(consumption.admission.characterId);
@@ -873,6 +1047,7 @@ export function createVillageRoom(
         recentActionIds: [],
       });
       this.#sendCombatState(client);
+      this.#sendQuestState(client);
     }
 
     override onLeave(client: Client) {
@@ -882,6 +1057,7 @@ export function createVillageRoom(
       this.#playerCombat.delete(client.sessionId);
       this.#playerIdentity.delete(client.sessionId);
       this.#characterDialogueState.delete(client.sessionId);
+      this.#questSnapshots.delete(client.sessionId);
       this.#dialogueSessions.delete(client.sessionId);
       this.#lastInteractionAtMs.delete(client.sessionId);
       this.#lastDialogueActionAtMs.delete(client.sessionId);
@@ -1145,6 +1321,14 @@ export function createVillageRoom(
       });
       const sourceMonsterId = this.#combatCatalog.monsters[0]?.id;
       if (!sourceMonsterId) return;
+      const questEventId = `quest-event:${this.roomId}:${monsterEntityId}:${String(defeatSequence)}`;
+      for (const characterId of eligibleCharacters) {
+        void this.#applyQuestObjectiveProgress(
+          characterId,
+          questEventId,
+          sourceMonsterId,
+        );
+      }
       const loot = this.#combatCatalog.loot.find(
         (definition) => definition.monsterId === sourceMonsterId,
       );

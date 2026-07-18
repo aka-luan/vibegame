@@ -7,6 +7,7 @@ import {
   validateDialogueInteractiveBindings,
 } from "./dialogue.js";
 import { contentSchema } from "./index.js";
+import { compileClientQuestCatalog } from "./quests.js";
 import { compileTiledMap } from "./maps.js";
 
 const packageRoot = new URL("../", import.meta.url);
@@ -26,7 +27,8 @@ async function compileCanonicalAssets(): Promise<void> {
   if (
     !parsedContent.success ||
     !parsedContent.data.combat ||
-    !parsedContent.data.dialogue
+    !parsedContent.data.dialogue ||
+    !parsedContent.data.quests
   ) {
     throw new Error(
       `Canonical combat/dialogue content failed:\n${parsedContent.success ? "Combat or dialogue catalog is missing" : parsedContent.error.message}`,
@@ -34,8 +36,10 @@ async function compileCanonicalAssets(): Promise<void> {
   }
   const parsedCombat = parsedContent.data.combat;
   const parsedDialogue = parsedContent.data.dialogue;
+  const parsedQuests = parsedContent.data.quests;
   const clientCombat = compileClientCombatCatalog(parsedCombat);
   const clientDialogue = compileClientDialogueCatalog(parsedDialogue);
+  const clientQuests = compileClientQuestCatalog(parsedQuests);
 
   const manifest = characterManifestSchema.safeParse(
     await readJson("manifests/village-character.json"),
@@ -104,6 +108,14 @@ async function compileCanonicalAssets(): Promise<void> {
     writeFile(
       new URL("village-dialogue.js", artifactDirectory),
       moduleSource(clientDialogue),
+    ),
+    writeFile(
+      new URL("village-quests-server.js", artifactDirectory),
+      moduleSource({ schemaVersion: 1, quests: parsedQuests.quests }),
+    ),
+    writeFile(
+      new URL("village-quests.js", artifactDirectory),
+      moduleSource(clientQuests),
     ),
   ]);
 }

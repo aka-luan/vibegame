@@ -2,22 +2,39 @@ import type {
   DialogueCatalog,
   DialogueCondition,
   DialogueGraph,
+  DialogueQuestAction,
 } from "@gameish/content/dialogue";
 import type { DialogueNodeMessage } from "@gameish/protocol";
+import type { QuestStatus } from "../quests/state.js";
 
 export interface DialogueCharacterState {
   level: number;
   flags: ReadonlySet<string>;
   completedQuestIds: ReadonlySet<string>;
+  questStatuses?: ReadonlyMap<string, QuestStatus>;
 }
 
 export type DialogueResolution =
-  | { success: true; graph: DialogueGraph; node: DialogueNodeMessage }
-  | { success: true; graph: DialogueGraph; closed: true }
+  | {
+      success: true;
+      graph: DialogueGraph;
+      node: DialogueNodeMessage;
+      action?: DialogueQuestAction;
+    }
+  | {
+      success: true;
+      graph: DialogueGraph;
+      closed: true;
+      action?: DialogueQuestAction;
+    }
   | { success: false; reason: "not_found" | "blocked" };
 
 type DialogueNodeResolution =
-  | { success: true; graph: DialogueGraph; node: DialogueNodeMessage }
+  | {
+      success: true;
+      graph: DialogueGraph;
+      node: DialogueNodeMessage;
+    }
   | { success: false; reason: "not_found" | "blocked" };
 
 export function evaluateDialogueCondition(
@@ -33,6 +50,10 @@ export function evaluateDialogueCondition(
       return character.flags.has(condition.flag);
     case "completed_quest":
       return character.completedQuestIds.has(condition.questId);
+    case "quest_status":
+      return (
+        character.questStatuses?.get(condition.questId) === condition.status
+      );
   }
 }
 
@@ -88,7 +109,22 @@ export function resolveDialogueChoice(
     return { success: false, reason: "choice_not_found" };
   }
   if (choice.nextNodeId === undefined) {
-    return { success: true, graph: current.graph, closed: true };
+    return choice.questAction
+      ? {
+          success: true,
+          graph: current.graph,
+          closed: true,
+          action: choice.questAction,
+        }
+      : { success: true, graph: current.graph, closed: true };
   }
-  return resolveDialogueNode(catalog, npcId, choice.nextNodeId, character);
+  const next = resolveDialogueNode(
+    catalog,
+    npcId,
+    choice.nextNodeId,
+    character,
+  );
+  return next.success && choice.questAction
+    ? { ...next, action: choice.questAction }
+    : next;
 }

@@ -64,6 +64,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   );
   const [clockMs, setClockMs] = useState(() => Date.now());
   const [dialogueTextScale, setDialogueTextScale] = useState(1);
+  const [guidanceEnabled, setGuidanceEnabled] = useState(true);
   const [combatSnapshot, setCombatSnapshot] = useState<
     Pick<
       VillagePresenceSnapshot,
@@ -74,6 +75,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       | "telegraphs"
       | "dialogueNode"
       | "dialogueError"
+      | "questState"
+      | "questReward"
+      | "questError"
       | "serverTimeOffsetMs"
     >
   >({
@@ -84,6 +88,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     telegraphs: [],
     dialogueNode: undefined,
     dialogueError: undefined,
+    questState: undefined,
+    questReward: undefined,
+    questError: undefined,
     serverTimeOffsetMs: 0,
   });
 
@@ -111,6 +118,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
             telegraphs: presenceSnapshot.telegraphs,
             dialogueNode: presenceSnapshot.dialogueNode,
             dialogueError: presenceSnapshot.dialogueError,
+            questState: presenceSnapshot.questState,
+            questReward: presenceSnapshot.questReward,
+            questError: presenceSnapshot.questError,
             serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
           });
         });
@@ -181,6 +191,50 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       {snapshot.interaction ? (
         <p className="interaction-hint">E — {snapshot.interaction}</p>
       ) : null}
+      <section aria-labelledby="quest-heading" className="quest-panel">
+        <h2 id="quest-heading">Quest tracker</h2>
+        {combatSnapshot.questState ? (
+          <>
+            <h3>{combatSnapshot.questState.title}</h3>
+            <p>{combatSnapshot.questState.description}</p>
+            <p aria-live="polite">
+              Status: {combatSnapshot.questState.status}; progress{" "}
+              {combatSnapshot.questState.progress}/
+              {combatSnapshot.questState.requiredCount}
+            </p>
+            <label>
+              <input
+                type="checkbox"
+                checked={guidanceEnabled}
+                onChange={(event) =>
+                  setGuidanceEnabled(event.currentTarget.checked)
+                }
+              />
+              Show guidance
+            </label>
+            {guidanceEnabled &&
+            (combatSnapshot.questState.status === "active" ||
+              combatSnapshot.questState.status === "ready") ? (
+              <p className="quest-guidance" role="status">
+                Guidance: {combatSnapshot.questState.guidance.label}
+              </p>
+            ) : null}
+            {combatSnapshot.questError ? (
+              <p role="alert">{combatSnapshot.questError}</p>
+            ) : null}
+            {combatSnapshot.questReward ? (
+              <p className="quest-reward" role="status">
+                Reward received: {combatSnapshot.questReward.itemId} ×
+                {combatSnapshot.questReward.quantity},{" "}
+                {combatSnapshot.questReward.experience} XP and{" "}
+                {combatSnapshot.questReward.currency} currency.
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <p>Loading quest state…</p>
+        )}
+      </section>
       <section aria-labelledby="combat-heading" className="combat-panel">
         <h2 id="combat-heading">Nearby encounters</h2>
         {combatSnapshot.monsters.map((monster) => (

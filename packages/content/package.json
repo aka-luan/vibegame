@@ -40,6 +40,18 @@
       "types": "./src/dialogue.ts",
       "default": "./dist/dialogue.js"
     },
+    "./quests": {
+      "types": "./src/quests.ts",
+      "default": "./dist/quests.js"
+    },
+    "./village-quests-server": {
+      "types": "./src/village-quests-server-artifact.d.ts",
+      "default": "./dist/artifacts/village-quests-server.js"
+    },
+    "./village-quests": {
+      "types": "./src/village-quests-artifact.d.ts",
+      "default": "./dist/artifacts/village-quests.js"
+    },
     "./village-dialogue-server": {
       "types": "./src/village-dialogue-server-artifact.d.ts",
       "default": "./dist/artifacts/village-dialogue-server.js"

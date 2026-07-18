@@ -22,6 +22,10 @@ export const ERROR_CODES = {
   dialogueBlocked: "DIALOGUE_BLOCKED",
   dialogueChoiceInvalid: "DIALOGUE_CHOICE_INVALID",
   dialogueNotActive: "DIALOGUE_NOT_ACTIVE",
+  questNotFound: "QUEST_NOT_FOUND",
+  questTransitionInvalid: "QUEST_TRANSITION_INVALID",
+  questObjectiveInvalid: "QUEST_OBJECTIVE_INVALID",
+  questPersistenceUnavailable: "QUEST_PERSISTENCE_UNAVAILABLE",
   invalidPlayTicket: "INVALID_PLAY_TICKET",
   playTicketExpired: "PLAY_TICKET_EXPIRED",
   playTicketReplayed: "PLAY_TICKET_REPLAYED",
@@ -41,6 +45,7 @@ export const CLIENT_MESSAGES = {
   interaction: "interaction",
   dialogueChoice: "dialogue_choice",
   dialogueClose: "dialogue_close",
+  questStateRequest: "quest_state_request",
 } as const;
 
 export const SERVER_MESSAGES = {
@@ -57,6 +62,9 @@ export const SERVER_MESSAGES = {
   dialogueNode: "dialogue_node",
   dialogueClosed: "dialogue_closed",
   dialogueRejected: "dialogue_rejected",
+  questState: "quest_state",
+  questReward: "quest_reward",
+  questRejected: "quest_rejected",
 } as const;
 
 export interface MovementIntention {
@@ -214,4 +222,24 @@ export interface DialogueNodeMessage {
   speaker: string;
   text: string;
   choices: { id: string; label: string }[];
+}
+
+export type QuestStatus = "available" | "active" | "ready" | "completed";
+
+export interface QuestStateMessage {
+  questId: string;
+  status: QuestStatus;
+  progress: number;
+  requiredCount: number;
+  title: string;
+  description: string;
+  guidance: { label: string; targetId: string };
+}
+
+export interface QuestRewardMessage {
+  questId: string;
+  itemId: string;
+  quantity: number;
+  experience: number;
+  currency: number;
 }
