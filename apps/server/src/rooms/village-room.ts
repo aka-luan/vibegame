@@ -293,7 +293,6 @@ export function createVillageRoom(
           }
           combat.lastTargetSelectionAtMs = this.state.serverTimeMs;
           combat.targetEntityId = target.entityId;
-          this.#recordParticipation(client);
           client.send(SERVER_MESSAGES.targetSelected, {
             targetEntityId: target.entityId,
           });
@@ -935,7 +934,12 @@ export function createVillageRoom(
         if (!sessionId) continue;
         const itemId = rollPersonalLoot(loot, this.#rewardRng);
         const grant = {
-          grantId: rewardGrantId(monsterEntityId, defeatSequence, characterId),
+          grantId: rewardGrantId(
+            this.roomId,
+            monsterEntityId,
+            defeatSequence,
+            characterId,
+          ),
           characterId,
           sourceMonsterId,
           defeatSequence,
