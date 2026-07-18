@@ -26,6 +26,16 @@ import {
   expireCombatStatuses,
   type ActiveCombatStatus,
 } from "../combat/status.js";
+import { rewardGrantId } from "../rewards/grants.js";
+import { rollPersonalLoot } from "../rewards/loot.js";
+import {
+  InMemoryRewardPersistence,
+  type RewardPersistence,
+} from "../rewards/persistence.js";
+import {
+  ParticipationWindow,
+  type ParticipationCandidate,
+} from "../rewards/participation.js";
 
 const joinOptionsSchema = z
   .object({ ticket: z.string().min(1).max(200) })
@@ -62,6 +72,8 @@ const MAX_COMBAT_MESSAGE_BYTES = 256;
 const TARGET_SELECTION_RATE_LIMIT_MS = 100;
 const MAX_INTENTION_VIOLATIONS = 5;
 const MAX_PENDING_INTENTIONS = 120;
+const REWARD_PROXIMITY_RADIUS = 180;
+const REWARD_AFK_AFTER_MS = 5_000;
 
 class PublicAppearance extends Schema {
   @type("string")
@@ -144,6 +156,8 @@ export function createVillageRoom(
     reconnectGraceSeconds?: number;
     combatCatalog?: CombatCatalog;
     rng?: () => number;
+    rewardRng?: () => number;
+    rewardPersistence?: RewardPersistence;
     recordLifecycle?: (
       event: "disconnected" | "reconnected" | "removed",
     ) => void;
@@ -161,7 +175,19 @@ export function createVillageRoom(
     readonly #reconnectGraceSeconds = options.reconnectGraceSeconds ?? 5;
     readonly #combatCatalog = options.combatCatalog ?? villageCombat;
     readonly #rng = options.rng ?? Math.random;
+    readonly #rewardRng = options.rewardRng ?? options.rng ?? Math.random;
+    readonly #rewardPersistence =
+      options.rewardPersistence ?? new InMemoryRewardPersistence();
     readonly #playerCombat = new Map<string, PlayerCombatState>();
+    readonly #playerIdentity = new Map<
+      string,
+      { characterId: string; partyId: string | undefined }
+    >();
+    readonly #joinedAtMs = new Map<string, number>();
+    readonly #lastActivityAtMs = new Map<string, number>();
+    readonly #disconnectedSessions = new Set<string>();
+    #participationWindow!: ParticipationWindow;
+    #defeatSequence = 0;
     #monsterLifecycle!: MonsterLifecycle;
 
     override onCreate() {
@@ -189,6 +215,7 @@ export function createVillageRoom(
         rng: this.#rng,
         bossAction,
       });
+      this.#participationWindow = this.#newParticipationWindow();
       this.#syncPublicMonster();
 
       this.maxMessagesPerSecond = 60;
@@ -266,6 +293,7 @@ export function createVillageRoom(
           }
           combat.lastTargetSelectionAtMs = this.state.serverTimeMs;
           combat.targetEntityId = target.entityId;
+          this.#recordParticipation(client);
           client.send(SERVER_MESSAGES.targetSelected, {
             targetEntityId: target.entityId,
           });
@@ -355,6 +383,7 @@ export function createVillageRoom(
             return;
           }
 
+          this.#recordParticipation(client);
           combat.resource = resolution.remainingResource;
           combat.cooldownEndsAtMs = resolution.cooldownEndsAtMs;
           combat.cooldowns.set(attack.id, resolution.cooldownEndsAtMs);
@@ -380,7 +409,10 @@ export function createVillageRoom(
             defeated,
           });
           this.#sendCombatState(client);
-          if (defeated) combat.targetEntityId = null;
+          if (defeated) {
+            combat.targetEntityId = null;
+            this.#completeMonsterDefeat(target.entityId);
+          }
         },
       );
       this.onMessage(
@@ -489,6 +521,7 @@ export function createVillageRoom(
         return;
       }
 
+      this.#recordParticipation(client);
       combat.resource = resolution.remainingResource;
       combat.cooldowns.set(ability.id, resolution.cooldownEndsAtMs);
       combat.lastActionAtMs = this.state.serverTimeMs;
@@ -573,7 +606,10 @@ export function createVillageRoom(
         movementLockedUntilMs: resolution.movementLockedUntilMs,
       });
       this.#sendCombatState(client);
-      if (defeated) combat.targetEntityId = null;
+      if (defeated) {
+        combat.targetEntityId = null;
+        this.#completeMonsterDefeat(target.entityId);
+      }
     }
 
     override onJoin(client: Client, unsafeOptions: unknown) {
@@ -596,6 +632,12 @@ export function createVillageRoom(
       player.y = spawn.y;
       player.appearance.assign(consumption.admission.appearance);
       this.state.players.set(client.sessionId, player);
+      this.#playerIdentity.set(client.sessionId, {
+        characterId: consumption.admission.characterId,
+        partyId: undefined,
+      });
+      this.#joinedAtMs.set(client.sessionId, this.state.serverTimeMs);
+      this.#lastActivityAtMs.delete(consumption.admission.characterId);
       this.#pendingIntentions.set(client.sessionId, new Map());
       this.#lastProcessedSequences.set(client.sessionId, 0);
       this.#intentionViolations.set(client.sessionId, 0);
@@ -621,12 +663,16 @@ export function createVillageRoom(
       this.#intentionViolations.delete(client.sessionId);
       this.#lastProcessedSequences.delete(client.sessionId);
       this.#playerCombat.delete(client.sessionId);
+      this.#playerIdentity.delete(client.sessionId);
+      this.#joinedAtMs.delete(client.sessionId);
+      this.#disconnectedSessions.delete(client.sessionId);
       this.state.players.delete(client.sessionId);
       options.recordLifecycle?.("removed");
     }
 
     override onDrop(client: Client) {
       if (!this.state.players.has(client.sessionId)) return;
+      this.#disconnectedSessions.add(client.sessionId);
       options.recordLifecycle?.("disconnected");
       void this.allowReconnection(client, this.#reconnectGraceSeconds).catch(
         () => undefined,
@@ -634,6 +680,7 @@ export function createVillageRoom(
     }
 
     override onReconnect(client: Client) {
+      this.#disconnectedSessions.delete(client.sessionId);
       options.recordLifecycle?.("reconnected");
       this.#sendAuthoritativeMovement(client);
     }
@@ -760,6 +807,7 @@ export function createVillageRoom(
             entityId: this.#monsterLifecycle.state.entityId,
           });
         } else if (event.type === "respawned") {
+          this.#participationWindow = this.#newParticipationWindow();
           this.broadcast(SERVER_MESSAGES.combatEvent, {
             kind: "respawned",
             entityId: this.#monsterLifecycle.state.entityId,
@@ -834,6 +882,86 @@ export function createVillageRoom(
 
     #sendCombatResult(client: Client, result: CombatResult) {
       client.send(SERVER_MESSAGES.combatResult, result);
+    }
+
+    #recordParticipation(client: Client): void {
+      const identity = this.#playerIdentity.get(client.sessionId);
+      if (!identity) return;
+      const now = this.state.serverTimeMs;
+      this.#lastActivityAtMs.set(identity.characterId, now);
+      this.#participationWindow.recordActivity({
+        characterId: identity.characterId,
+        partyId: identity.partyId,
+        atMs: now,
+      });
+    }
+
+    #completeMonsterDefeat(monsterEntityId: string): void {
+      this.#participationWindow.close(this.state.serverTimeMs);
+      this.#defeatSequence += 1;
+      const defeatSequence = this.#defeatSequence;
+      const monster = this.#monsterLifecycle.state;
+      const candidates: ParticipationCandidate[] = [];
+      for (const [sessionId, player] of this.state.players) {
+        const identity = this.#playerIdentity.get(sessionId);
+        if (!identity) continue;
+        candidates.push({
+          characterId: identity.characterId,
+          partyId: identity.partyId,
+          x: player.x,
+          y: player.y,
+          connected: !this.#disconnectedSessions.has(sessionId),
+          joinedAtMs:
+            this.#joinedAtMs.get(sessionId) ?? Number.MAX_SAFE_INTEGER,
+          lastActivityAtMs:
+            this.#lastActivityAtMs.get(identity.characterId) ?? 0,
+        });
+      }
+      const eligibleCharacters = this.#participationWindow.eligibleCharacters({
+        defeatedAtMs: this.state.serverTimeMs,
+        monsterPosition: { x: monster.x, y: monster.y },
+        candidates,
+      });
+      const sourceMonsterId = this.#combatCatalog.monsters[0]?.id;
+      if (!sourceMonsterId) return;
+      const loot = this.#combatCatalog.loot.find(
+        (definition) => definition.monsterId === sourceMonsterId,
+      );
+      if (!loot) return;
+      for (const characterId of eligibleCharacters) {
+        const sessionId = [...this.#playerIdentity.entries()].find(
+          ([, identity]) => identity.characterId === characterId,
+        )?.[0];
+        if (!sessionId) continue;
+        const itemId = rollPersonalLoot(loot, this.#rewardRng);
+        const grant = {
+          grantId: rewardGrantId(monsterEntityId, defeatSequence, characterId),
+          characterId,
+          sourceMonsterId,
+          defeatSequence,
+          itemId,
+          quantity: 1,
+        };
+        void this.#rewardPersistence
+          .grant(grant)
+          .then(() => {
+            const client = this.clients.find(
+              (candidate) => candidate.sessionId === sessionId,
+            );
+            client?.send(SERVER_MESSAGES.rewardSummary, {
+              sourceMonsterId,
+              items: [{ itemId, quantity: 1 }],
+            });
+          })
+          .catch(() => undefined);
+      }
+    }
+
+    #newParticipationWindow(): ParticipationWindow {
+      return new ParticipationWindow({
+        proximityRadius: REWARD_PROXIMITY_RADIUS,
+        afkAfterMs: REWARD_AFK_AFTER_MS,
+      });
     }
 
     #monsterHealthFraction(): number {

@@ -11,6 +11,7 @@ import {
   ROOM_NAMES,
   SERVER_MESSAGES,
   type CombatResult,
+  type RewardSummaryMessage,
 } from "../packages/protocol/src/index.js";
 
 let runningServer: RunningFoundationServer | undefined;
@@ -59,6 +60,114 @@ function monsterId(room: Room): string {
 }
 
 describe("authoritative combat room boundary", () => {
+  it("delivers independent private rewards only to active participants", async () => {
+    const endpoint = await startDevelopmentServer();
+    const first = await joinVillage(endpoint, "First Reward Ranger");
+    const second = await joinVillage(endpoint, "Second Reward Ranger");
+    const spectator = await joinVillage(endpoint, "Spectator Ranger");
+    const targetEntityId = monsterId(first);
+    const firstRewards: RewardSummaryMessage[] = [];
+    const secondRewards: RewardSummaryMessage[] = [];
+    const spectatorRewards: RewardSummaryMessage[] = [];
+    const firstResults: CombatResult[] = [];
+    const secondResults: CombatResult[] = [];
+    const selected = { first: false, second: false };
+    first.onMessage<CombatResult>(SERVER_MESSAGES.combatResult, (result) =>
+      firstResults.push(result),
+    );
+    second.onMessage<CombatResult>(SERVER_MESSAGES.combatResult, (result) =>
+      secondResults.push(result),
+    );
+    first.onMessage(SERVER_MESSAGES.targetSelected, () => {
+      selected.first = true;
+    });
+    second.onMessage(SERVER_MESSAGES.targetSelected, () => {
+      selected.second = true;
+    });
+    first.onMessage<RewardSummaryMessage>(
+      SERVER_MESSAGES.rewardSummary,
+      (reward) => firstRewards.push(reward),
+    );
+    second.onMessage<RewardSummaryMessage>(
+      SERVER_MESSAGES.rewardSummary,
+      (reward) => secondRewards.push(reward),
+    );
+    spectator.onMessage<RewardSummaryMessage>(
+      SERVER_MESSAGES.rewardSummary,
+      (reward) => spectatorRewards.push(reward),
+    );
+
+    first.send(CLIENT_MESSAGES.targetSelection, { targetEntityId });
+    second.send(CLIENT_MESSAGES.targetSelection, { targetEntityId });
+    await vi.waitFor(() =>
+      expect(selected).toEqual({ first: true, second: true }),
+    );
+    await vi.waitFor(
+      () => {
+        const state = JSON.parse(JSON.stringify(first.state)) as {
+          players: Record<string, { x: number; y: number }>;
+          monsters: Record<string, { x: number; y: number }>;
+        };
+        const player = state.players[first.sessionId];
+        const monster = state.monsters[targetEntityId];
+        expect(player).toBeDefined();
+        expect(monster).toBeDefined();
+        expect(
+          Math.hypot(player!.x - monster!.x, player!.y - monster!.y),
+        ).toBeLessThanOrEqual(84);
+      },
+      { timeout: 5_000, interval: 20 },
+    );
+
+    const attack = (room: Room, actionId: string) => {
+      room.send(CLIENT_MESSAGES.basicAttack, {
+        actionId,
+        targetEntityId,
+      });
+    };
+    attack(first, "first-hit");
+    await vi.waitFor(() =>
+      expect(firstResults).toContainEqual(
+        expect.objectContaining({ accepted: true, actionId: "first-hit" }),
+      ),
+    );
+    attack(second, "second-hit");
+    await vi.waitFor(() =>
+      expect(secondResults).toContainEqual(
+        expect.objectContaining({ accepted: true, actionId: "second-hit" }),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    attack(first, "defeating-hit");
+    await vi.waitFor(() =>
+      expect(firstResults).toContainEqual(
+        expect.objectContaining({
+          accepted: true,
+          actionId: "defeating-hit",
+          defeated: true,
+        }),
+      ),
+    );
+
+    await vi.waitFor(
+      () => {
+        expect(firstRewards).toHaveLength(1);
+        expect(secondRewards).toHaveLength(1);
+      },
+      { timeout: 3_000, interval: 20 },
+    );
+    expect(spectatorRewards).toEqual([]);
+    expect(firstRewards[0]).toEqual({
+      sourceMonsterId: "monster:mossback",
+      items: [{ itemId: "item:mossback_scale", quantity: 1 }],
+    });
+    expect(secondRewards[0]).toEqual({
+      sourceMonsterId: "monster:mossback",
+      items: [{ itemId: "item:mossback_scale", quantity: 1 }],
+    });
+    expect(JSON.stringify(spectator.state)).not.toContain("reward_summary");
+  });
+
   it("rejects forged outcomes and keeps action results private", async () => {
     const endpoint = await startDevelopmentServer();
     const attacker = await joinVillage(endpoint, "Combat Ranger");

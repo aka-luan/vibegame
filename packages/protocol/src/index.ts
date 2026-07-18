@@ -43,6 +43,7 @@ export const SERVER_MESSAGES = {
   damageTaken: "damage_taken",
   combatState: "combat_state",
   combatTelegraph: "combat_telegraph",
+  rewardSummary: "reward_summary",
 } as const;
 
 export interface MovementIntention {
@@ -170,4 +171,9 @@ export interface CombatTelegraphMessage {
   startTimeMs: number;
   durationMs: number;
   interruptible: boolean;
+}
+
+export interface RewardSummaryMessage {
+  sourceMonsterId: string;
+  items: { itemId: string; quantity: number }[];
 }
