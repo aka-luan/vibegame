@@ -1,0 +1,303 @@
+import { randomBytes, randomUUID } from "node:crypto";
+
+import type {
+  AccountCharacter,
+  CharacterCreationInput,
+  GuestSessionRecord,
+} from "@gameish/database";
+
+import { hashSecret } from "./play-tickets.js";
+
+export const GUEST_COOKIE_NAME = "gameish_guest";
+export const GUEST_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+export const GUEST_SESSION_ROTATION_MS = 24 * 60 * 60 * 1_000;
+export const PLAY_TICKET_TTL_MS = 15_000;
+export const VILLAGE_CONTENT_VERSION = "content:village_m1_v1" as const;
+export const VILLAGE_DESTINATION = "map:village" as const;
+
+export interface AccountRepository {
+  createGuestSession(input: {
+    id: string;
+    userId: string;
+    secretHash: string;
+    now: Date;
+    expiresAt: Date;
+    rotatedAt: Date;
+  }): Promise<void>;
+  findSession(
+    secretHash: string,
+    now: Date,
+  ): Promise<GuestSessionRecord | undefined>;
+  touchSession(id: string, now: Date): Promise<void>;
+  revokeSession(id: string, now: Date): Promise<boolean>;
+  rotateSession(input: {
+    oldId: string;
+    oldSecretHash: string;
+    replacement: {
+      id: string;
+      userId: string;
+      secretHash: string;
+      now: Date;
+      expiresAt: Date;
+      rotatedAt: Date;
+      selectedCharacterId?: string | null;
+    };
+  }): Promise<boolean>;
+  listCharacters(userId: string): Promise<AccountCharacter[]>;
+  createCharacter(input: CharacterCreationInput): Promise<AccountCharacter>;
+  selectCharacter(
+    sessionId: string,
+    userId: string,
+    characterId: string,
+    now: Date,
+  ): Promise<boolean>;
+  issuePlayTicket(input: {
+    tokenHash: string;
+    userId: string;
+    characterId: string;
+    logicalDestination: string;
+    contentVersion: string;
+    nonce: string;
+    now: Date;
+    expiresAt: Date;
+  }): Promise<boolean>;
+}
+
+export interface AccountCharacterInput {
+  name: string;
+  requestId: string;
+}
+
+export interface AccountSession {
+  id: string;
+  userId: string;
+  selectedCharacterId: string | null;
+}
+
+export interface SessionContext {
+  session: AccountSession;
+  setCookie?: string | undefined;
+}
+
+export interface AccountServiceOptions {
+  now?: () => number;
+  randomBytes?: (size: number) => Buffer;
+}
+
+function makeCookie(secret: string): string {
+  return `${GUEST_COOKIE_NAME}=${secret}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${String(Math.floor(GUEST_SESSION_TTL_MS / 1_000))}`;
+}
+
+export function readGuestCookie(
+  header: string | undefined,
+): string | undefined {
+  if (!header) return undefined;
+  for (const part of header.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0) continue;
+    const name = part.slice(0, separator).trim();
+    if (name === GUEST_COOKIE_NAME) {
+      const value = part.slice(separator + 1).trim();
+      return /^[A-Za-z0-9_-]{40,100}$/.test(value) ? value : undefined;
+    }
+  }
+  return undefined;
+}
+
+export function normalizeCharacterName(name: string): string {
+  return name
+    .normalize("NFC")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase("en-US");
+}
+
+export class GuestAccountService {
+  readonly #repository: AccountRepository;
+  readonly #now: () => number;
+  readonly #randomBytes: (size: number) => Buffer;
+
+  constructor(
+    repository: AccountRepository,
+    options: AccountServiceOptions = {},
+  ) {
+    this.#repository = repository;
+    this.#now = options.now ?? Date.now;
+    this.#randomBytes = options.randomBytes ?? randomBytes;
+  }
+
+  async ensureSession(cookie: string | undefined): Promise<SessionContext> {
+    const nowMs = this.#now();
+    const now = new Date(nowMs);
+    const secret = readGuestCookie(cookie);
+    const existing = secret
+      ? await this.#repository.findSession(hashSecret(secret), now)
+      : undefined;
+    if (!existing) return this.#createSession(nowMs);
+
+    if (nowMs - existing.rotatedAt.getTime() >= GUEST_SESSION_ROTATION_MS) {
+      const replacement = this.#newSession(existing.userId, nowMs);
+      const rotated = await this.#repository.rotateSession({
+        oldId: existing.id,
+        oldSecretHash: existing.secretHash,
+        replacement: {
+          id: replacement.id,
+          userId: existing.userId,
+          secretHash: replacement.secretHash,
+          now,
+          expiresAt: replacement.expiresAt,
+          rotatedAt: now,
+          selectedCharacterId: existing.selectedCharacterId,
+        },
+      });
+      if (rotated) {
+        return {
+          session: {
+            id: replacement.id,
+            userId: existing.userId,
+            selectedCharacterId: existing.selectedCharacterId,
+          },
+          setCookie: makeCookie(replacement.secret),
+        };
+      }
+    }
+
+    await this.#repository.touchSession(existing.id, now);
+    return {
+      session: {
+        id: existing.id,
+        userId: existing.userId,
+        selectedCharacterId: existing.selectedCharacterId,
+      },
+    };
+  }
+
+  listCharacters(userId: string): Promise<AccountCharacter[]> {
+    return this.#repository.listCharacters(userId);
+  }
+
+  async revokeSession(cookie: string | undefined): Promise<boolean> {
+    const secret = readGuestCookie(cookie);
+    if (!secret) return false;
+    const session = await this.#repository.findSession(
+      hashSecret(secret),
+      new Date(this.#now()),
+    );
+    if (!session) return false;
+    return this.#repository.revokeSession(session.id, new Date(this.#now()));
+  }
+
+  async createCharacter(
+    userId: string,
+    input: AccountCharacterInput,
+  ): Promise<AccountCharacter> {
+    const combatClass = this.#villageClass();
+    const abilityIds = combatClass.serverOnly.abilityIds;
+    if (abilityIds.length !== 4)
+      throw new Error("Village class loadout is incomplete");
+    return this.#repository.createCharacter({
+      id: `character:${randomUUID()}`,
+      userId,
+      name: input.name.trim().replace(/\s+/g, " "),
+      normalizedName: normalizeCharacterName(input.name),
+      creationRequestId: input.requestId,
+      now: new Date(this.#now()),
+      contentVersion: VILLAGE_CONTENT_VERSION,
+      classId: combatClass.id,
+      basicAttackId: combatClass.serverOnly.basicAttackId,
+      abilityIds: [
+        abilityIds[0]!,
+        abilityIds[1]!,
+        abilityIds[2]!,
+        abilityIds[3]!,
+      ],
+      starterEquipmentItemId: "item:trailwarden_tunic",
+      rigId: "rig:village_placeholder",
+      baseLayerId: "base",
+      armorLayerId: "tunic",
+      logicalMapId: VILLAGE_DESTINATION,
+      entranceId: "village_square",
+    });
+  }
+
+  async selectCharacter(
+    session: AccountSession,
+    characterId: string,
+  ): Promise<boolean> {
+    return this.#repository.selectCharacter(
+      session.id,
+      session.userId,
+      characterId,
+      new Date(this.#now()),
+    );
+  }
+
+  async issuePlayTicket(
+    session: AccountSession,
+    characterId: string | undefined,
+  ): Promise<{ ticket: string; expiresAt: number } | undefined> {
+    const selectedCharacterId =
+      characterId ?? session.selectedCharacterId ?? undefined;
+    if (!selectedCharacterId) return undefined;
+    const ticket = this.#randomBytes(32).toString("base64url");
+    const nowMs = this.#now();
+    const expiresAt = nowMs + PLAY_TICKET_TTL_MS;
+    const created = await this.#repository.issuePlayTicket({
+      tokenHash: hashSecret(ticket),
+      userId: session.userId,
+      characterId: selectedCharacterId,
+      logicalDestination: VILLAGE_DESTINATION,
+      contentVersion: VILLAGE_CONTENT_VERSION,
+      nonce: randomUUID(),
+      now: new Date(nowMs),
+      expiresAt: new Date(expiresAt),
+    });
+    return created ? { ticket, expiresAt } : undefined;
+  }
+
+  async #createSession(nowMs: number): Promise<SessionContext> {
+    const session = this.#newSession(`user:${randomUUID()}`, nowMs);
+    const now = new Date(nowMs);
+    await this.#repository.createGuestSession({
+      id: session.id,
+      userId: session.userId,
+      secretHash: session.secretHash,
+      now,
+      expiresAt: session.expiresAt,
+      rotatedAt: now,
+    });
+    return {
+      session: {
+        id: session.id,
+        userId: session.userId,
+        selectedCharacterId: null,
+      },
+      setCookie: makeCookie(session.secret),
+    };
+  }
+
+  #newSession(userId: string, nowMs: number) {
+    const secret = this.#randomBytes(32).toString("base64url");
+    return {
+      id: `session:${randomUUID()}`,
+      userId,
+      secret,
+      secretHash: hashSecret(secret),
+      expiresAt: new Date(nowMs + GUEST_SESSION_TTL_MS),
+    };
+  }
+
+  #villageClass() {
+    // Kept as a lazy import boundary in the module below to keep account
+    // tests independent from the generated content artifacts.
+    return villageClass;
+  }
+}
+
+import villageCombat from "@gameish/content/village-combat-server";
+
+const villageClass = villageCombat.classes[0]!;
+
+export function guestCookieForTesting(secret: string): string {
+  return makeCookie(secret);
+}

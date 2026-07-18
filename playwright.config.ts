@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const runAccountE2E = process.env.RUN_ACCOUNT_E2E === "true";
+const accountMigration = runAccountE2E ? "pnpm db:migrate && " : "";
+
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: false,
@@ -18,8 +21,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command:
-        "pnpm --filter @gameish/content build && pnpm --filter @gameish/world build && pnpm --filter @gameish/protocol build && pnpm --filter @gameish/database build && pnpm --filter @gameish/server build && DEVELOPMENT_LOGIN_ENABLED=true NODE_ENV=test PORT=3567 pnpm --filter @gameish/server start",
+      command: `${accountMigration}pnpm --filter @gameish/content build && pnpm --filter @gameish/world build && pnpm --filter @gameish/protocol build && pnpm --filter @gameish/database build && pnpm --filter @gameish/server build && DEVELOPMENT_LOGIN_ENABLED=true PUBLIC_ORIGIN=http://127.0.0.1:55173 NODE_ENV=test PORT=3567 pnpm --filter @gameish/server start`,
       url: "http://127.0.0.1:3567/health",
       reuseExistingServer: false,
       timeout: 30_000,

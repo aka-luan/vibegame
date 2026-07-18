@@ -3,6 +3,7 @@ import villageCombat from "@gameish/content/village-combat";
 
 import {
   connectDevelopmentVillage,
+  connectVillageWithTicket,
   type VillagePresence,
   type VillagePresenceSnapshot,
 } from "../network/village-presence.js";
@@ -28,6 +29,11 @@ const initialSnapshot: WorldSnapshot = {
 const developmentLoginEnabled =
   (import.meta.env.MODE === "development" || import.meta.env.MODE === "test") &&
   import.meta.env.VITE_DEVELOPMENT_LOGIN_ENABLED === "true";
+const accountFlowForced =
+  import.meta.env.MODE === "test" &&
+  developmentLoginEnabled &&
+  new URLSearchParams(window.location.search).get("account") === "1";
+const useDevelopmentLogin = developmentLoginEnabled && !accountFlowForced;
 
 function requestedDisplayName(): string {
   const name = new URLSearchParams(window.location.search).get("name")?.trim();
@@ -51,11 +57,24 @@ const abilitySlots = classDefinition?.abilityIds.map((id, index) => ({
   definition: villageCombat.abilities.find((ability) => ability.id === id),
 }));
 
+interface AccountCharacter {
+  id: string;
+  name: string;
+}
+
 export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   const renderer = useRef<WorldRenderer | null>(null);
   const presence = useRef<VillagePresence | null>(null);
+  const unsubscribeCombat = useRef<(() => void) | undefined>(undefined);
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [accountCharacters, setAccountCharacters] = useState<
+    AccountCharacter[]
+  >([]);
+  const [accountName, setAccountName] = useState("");
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountReady, setAccountReady] = useState(useDevelopmentLogin);
+  const [joined, setJoined] = useState(useDevelopmentLogin);
   const [developmentRoomId, setDevelopmentRoomId] = useState<string | null>(
     null,
   );
@@ -96,9 +115,22 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
 
   useEffect(() => {
     let active = true;
-    let unsubscribeCombat: (() => void) | undefined;
-    if (!developmentLoginEnabled) {
-      setConnectionError("Multiplayer development login is disabled.");
+    if (!useDevelopmentLogin) {
+      void fetch("/api/guest/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      })
+        .then(async (response) => {
+          if (!response.ok) throw new Error("Guest session unavailable");
+          return (await response.json()) as { characters?: AccountCharacter[] };
+        })
+        .then((account) => {
+          const characters = account.characters ?? [];
+          setAccountCharacters(characters);
+          setAccountReady(true);
+        })
+        .catch(() => setConnectionError("Could not create a guest session."));
       return () => undefined;
     }
 
@@ -108,22 +140,25 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       .then((connectedPresence) => {
         if (!active) return connectedPresence.close();
         presence.current = connectedPresence;
+        setJoined(true);
         setDevelopmentRoomId(connectedPresence.developmentRoomId);
-        unsubscribeCombat = connectedPresence.subscribe((presenceSnapshot) => {
-          setCombatSnapshot({
-            monsters: presenceSnapshot.monsters,
-            selectedTargetEntityId: presenceSnapshot.selectedTargetEntityId,
-            combatResult: presenceSnapshot.combatResult,
-            combatState: presenceSnapshot.combatState,
-            telegraphs: presenceSnapshot.telegraphs,
-            dialogueNode: presenceSnapshot.dialogueNode,
-            dialogueError: presenceSnapshot.dialogueError,
-            questState: presenceSnapshot.questState,
-            questReward: presenceSnapshot.questReward,
-            questError: presenceSnapshot.questError,
-            serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
-          });
-        });
+        unsubscribeCombat.current = connectedPresence.subscribe(
+          (presenceSnapshot) => {
+            setCombatSnapshot({
+              monsters: presenceSnapshot.monsters,
+              selectedTargetEntityId: presenceSnapshot.selectedTargetEntityId,
+              combatResult: presenceSnapshot.combatResult,
+              combatState: presenceSnapshot.combatState,
+              telegraphs: presenceSnapshot.telegraphs,
+              dialogueNode: presenceSnapshot.dialogueNode,
+              dialogueError: presenceSnapshot.dialogueError,
+              questState: presenceSnapshot.questState,
+              questReward: presenceSnapshot.questReward,
+              questError: presenceSnapshot.questError,
+              serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
+            });
+          },
+        );
         renderer.current = createWorldRenderer(
           worldRoot,
           connectedPresence,
@@ -139,12 +174,88 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       active = false;
       renderer.current?.destroy();
       renderer.current = null;
-      unsubscribeCombat?.();
+      unsubscribeCombat.current?.();
+      unsubscribeCombat.current = undefined;
       const connectedPresence = presence.current;
       presence.current = null;
       if (connectedPresence) void connectedPresence.close();
     };
   }, [worldRoot]);
+
+  async function joinProductionCharacter(characterId: string): Promise<void> {
+    setAccountBusy(true);
+    setConnectionError(null);
+    try {
+      const selected = await fetch(
+        `/api/characters/${encodeURIComponent(characterId)}/select`,
+        { method: "POST" },
+      );
+      if (!selected.ok) throw new Error("Character selection failed");
+      const ticketResponse = await fetch("/api/play-ticket", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ characterId }),
+      });
+      if (!ticketResponse.ok) throw new Error("Play ticket unavailable");
+      const body = (await ticketResponse.json()) as { ticket?: unknown };
+      if (typeof body.ticket !== "string")
+        throw new Error("Invalid play ticket");
+      const connectedPresence = await connectVillageWithTicket(body.ticket);
+      presence.current = connectedPresence;
+      setJoined(true);
+      unsubscribeCombat.current = connectedPresence.subscribe(
+        (presenceSnapshot) => {
+          setCombatSnapshot({
+            monsters: presenceSnapshot.monsters,
+            selectedTargetEntityId: presenceSnapshot.selectedTargetEntityId,
+            combatResult: presenceSnapshot.combatResult,
+            combatState: presenceSnapshot.combatState,
+            telegraphs: presenceSnapshot.telegraphs,
+            dialogueNode: presenceSnapshot.dialogueNode,
+            dialogueError: presenceSnapshot.dialogueError,
+            questState: presenceSnapshot.questState,
+            questReward: presenceSnapshot.questReward,
+            questError: presenceSnapshot.questError,
+            serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
+          });
+        },
+      );
+      renderer.current = createWorldRenderer(
+        worldRoot,
+        connectedPresence,
+        setSnapshot,
+      );
+    } catch {
+      setConnectionError("Could not enter the village.");
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
+  async function createProductionCharacter(): Promise<void> {
+    setAccountBusy(true);
+    setConnectionError(null);
+    try {
+      const response = await fetch("/api/characters", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: accountName,
+          requestId: crypto.randomUUID(),
+        }),
+      });
+      if (!response.ok) throw new Error("Character creation failed");
+      const body = (await response.json()) as {
+        character?: AccountCharacter;
+      };
+      if (!body.character) throw new Error("Invalid character response");
+      setAccountCharacters((characters) => [...characters, body.character!]);
+      await joinProductionCharacter(body.character.id);
+    } catch {
+      setConnectionError("Could not create that character.");
+      setAccountBusy(false);
+    }
+  }
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockMs(Date.now()), 100);
@@ -177,6 +288,59 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       result.defeated ? "Mossback defeated." : `Hit for ${result.damage}.`
     }`;
   })();
+
+  if (!useDevelopmentLogin && accountReady && !joined) {
+    return (
+      <aside
+        className="world-panel account-panel"
+        aria-labelledby="account-heading"
+      >
+        <p className="eyebrow">A browser-bound guest identity</p>
+        <h1 id="account-heading">Enter the village</h1>
+        <p>
+          Your guest credential stays in this browser. Losing it is
+          unrecoverable in this slice.
+        </p>
+        {connectionError ? <p role="alert">{connectionError}</p> : null}
+        {accountCharacters.length === 0 ? (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void createProductionCharacter();
+            }}
+          >
+            <label>
+              Character name
+              <input
+                value={accountName}
+                onChange={(event) => setAccountName(event.currentTarget.value)}
+                minLength={2}
+                maxLength={24}
+                required
+              />
+            </label>
+            <button type="submit" disabled={accountBusy}>
+              Create character
+            </button>
+          </form>
+        ) : (
+          <section aria-labelledby="characters-heading">
+            <h2 id="characters-heading">Choose a character</h2>
+            {accountCharacters.map((character) => (
+              <button
+                type="button"
+                key={character.id}
+                disabled={accountBusy}
+                onClick={() => void joinProductionCharacter(character.id)}
+              >
+                Enter as {character.name}
+              </button>
+            ))}
+          </section>
+        )}
+      </aside>
+    );
+  }
 
   return (
     <aside className="world-panel" aria-labelledby="world-heading">
@@ -323,7 +487,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       <button type="button" onClick={() => renderer.current?.focus()}>
         Return to world
       </button>
-      {developmentLoginEnabled && developmentRoomId ? (
+      {useDevelopmentLogin && developmentRoomId ? (
         <details className="development-overlay">
           <summary>Development room inspection</summary>
           <code>{developmentRoomId}</code>

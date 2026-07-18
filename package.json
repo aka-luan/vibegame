@@ -13,6 +13,7 @@
     "db:down": "docker compose down",
     "db:generate": "pnpm --filter @gameish/database db:generate",
     "db:migrate": "pnpm --filter @gameish/database db:migrate",
+    "db:seed": "pnpm --filter @gameish/database db:seed",
     "db:up": "docker compose up -d --wait postgres",
     "dev": "pnpm --filter @gameish/content build && pnpm --filter @gameish/world build && pnpm --parallel --filter @gameish/server --filter @gameish/web dev",
     "format": "prettier --write .",

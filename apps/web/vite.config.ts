@@ -8,6 +8,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      "/api": gameServerTarget,
       "/development": gameServerTarget,
       "/matchmake": gameServerTarget,
     },
@@ -15,6 +16,7 @@ export default defineConfig({
   },
   preview: {
     proxy: {
+      "/api": gameServerTarget,
       "/development": gameServerTarget,
       "/matchmake": gameServerTarget,
     },

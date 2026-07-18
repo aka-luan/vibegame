@@ -24,6 +24,17 @@
       }
     },
     {
+      "id": "item:trailwarden_tunic",
+      "tags": ["equipment", "starter"],
+      "references": [],
+      "clientVisible": {
+        "displayName": "Trailwarden Tunic"
+      },
+      "serverOnly": {
+        "developmentOnly": false
+      }
+    },
+    {
       "id": "npc:elmira",
       "tags": ["npc", "village"],
       "references": [],

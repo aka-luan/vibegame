@@ -11,6 +11,11 @@ import type { FastifyInstance } from "fastify";
 
 import { createHttpApp, type ReadinessProbe } from "./http/app.js";
 import { DevelopmentPlayTickets } from "./development/play-tickets.js";
+import type { GuestAccountService } from "./identity/guest-account.js";
+import {
+  FallbackPlayTickets,
+  type PlayTicketConsumer,
+} from "./identity/play-tickets.js";
 import { PrivacySpikeRoom } from "./rooms/privacy-spike-room.js";
 import { createVillageRoom } from "./rooms/village-room.js";
 
@@ -18,8 +23,11 @@ export interface StartFoundationServerOptions {
   host: string;
   port: number;
   publicAddress?: string | undefined;
+  allowedOrigin?: string | undefined;
   readinessProbe: ReadinessProbe;
   developmentLoginEnabled?: boolean | undefined;
+  accountService?: GuestAccountService | undefined;
+  playTickets?: PlayTicketConsumer | undefined;
   runtimeEnvironment?: "development" | "test" | "production" | undefined;
   now?: (() => number) | undefined;
   reconnectGraceSeconds?: number | undefined;
@@ -69,9 +77,15 @@ export async function startFoundationServer(
         options.now === undefined ? undefined : { now: options.now },
       )
     : undefined;
+  const playTickets =
+    developmentPlayTickets && options.playTickets
+      ? new FallbackPlayTickets([developmentPlayTickets, options.playTickets])
+      : (options.playTickets ?? developmentPlayTickets);
   const app = createHttpApp({
     readinessProbe: options.readinessProbe,
     developmentPlayTickets,
+    accountService: options.accountService,
+    allowedOrigin: options.allowedOrigin,
     logger: options.logger,
   });
   await app.ready();
@@ -92,10 +106,10 @@ export async function startFoundationServer(
     greet: false,
   });
   gameServer.define("privacy_spike", PrivacySpikeRoom);
-  if (developmentPlayTickets) {
+  if (playTickets) {
     gameServer.define(
       ROOM_NAMES.village,
-      createVillageRoom(developmentPlayTickets, {
+      createVillageRoom(playTickets, {
         ...(options.now === undefined ? {} : { now: options.now }),
         ...(options.reconnectGraceSeconds === undefined
           ? {}

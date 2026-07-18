@@ -1,5 +1,13 @@
 export const ERROR_CODES = {
   databaseUnavailable: "DATABASE_UNAVAILABLE",
+  invalidOrigin: "INVALID_ORIGIN",
+  sessionRequired: "SESSION_REQUIRED",
+  characterNotFound: "CHARACTER_NOT_FOUND",
+  characterNameTaken: "CHARACTER_NAME_TAKEN",
+  invalidCharacterName: "INVALID_CHARACTER_NAME",
+  invalidCharacterRequest: "INVALID_CHARACTER_REQUEST",
+  destinationNotAllowed: "DESTINATION_NOT_ALLOWED",
+  staleContentVersion: "STALE_CONTENT_VERSION",
   invalidJoinOptions: "INVALID_JOIN_OPTIONS",
   invalidMovementIntention: "INVALID_MOVEMENT_INTENTION",
   invalidTargetSelection: "INVALID_TARGET_SELECTION",

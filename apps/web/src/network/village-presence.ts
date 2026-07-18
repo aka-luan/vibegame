@@ -212,9 +212,16 @@ export async function connectDevelopmentVillage(
     throw new Error("Development admission returned an invalid ticket");
   }
 
+  return connectVillageWithTicket(body.ticket, options);
+}
+
+export async function connectVillageWithTicket(
+  ticket: string,
+  options: { simulatedLatencyMs?: number } = {},
+): Promise<VillagePresence> {
   const room: Room<unknown, VillageRoomState> = await new Client(
     window.location.origin,
-  ).joinOrCreate(ROOM_NAMES.village, { ticket: body.ticket });
+  ).joinOrCreate(ROOM_NAMES.village, { ticket });
   const listeners = new Set<(snapshot: VillagePresenceSnapshot) => void>();
   const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
   let simulatedLatencyMs = options.simulatedLatencyMs ?? 0;

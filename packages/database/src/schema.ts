@@ -1,3 +1,194 @@
-// Durable game tables are an explicit non-goal of the foundation issue.
-// The first persistence ticket will add reviewed generated migrations here.
-export {};
+import { sql } from "drizzle-orm";
+import {
+  integer,
+  pgTable,
+  primaryKey,
+  check,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+
+function timestamps() {
+  return {
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  };
+}
+
+export const users = pgTable("users", {
+  id: text("id").primaryKey(),
+  kind: text("kind").notNull(),
+  ...timestamps(),
+});
+
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    secretHash: text("secret_hash").notNull(),
+    ...timestamps(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    rotatedAt: timestamp("rotated_at", { withTimezone: true }).notNull(),
+    selectedCharacterId: text("selected_character_id"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [uniqueIndex("sessions_secret_hash_unique").on(table.secretHash)],
+);
+
+export const characters = pgTable(
+  "characters",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    normalizedName: text("normalized_name").notNull(),
+    creationRequestId: text("creation_request_id").notNull(),
+    revision: integer("revision").notNull().default(0),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex("characters_user_name_unique").on(
+      table.userId,
+      table.normalizedName,
+    ),
+    uniqueIndex("characters_user_creation_request_unique").on(
+      table.userId,
+      table.creationRequestId,
+    ),
+  ],
+);
+
+export const characterAppearance = pgTable("character_appearance", {
+  characterId: text("character_id")
+    .primaryKey()
+    .references(() => characters.id, { onDelete: "cascade" }),
+  rigId: text("rig_id").notNull(),
+  baseLayerId: text("base_layer_id").notNull(),
+  armorLayerId: text("armor_layer_id").notNull(),
+  ...timestamps(),
+});
+
+export const characterProgression = pgTable(
+  "character_progression",
+  {
+    characterId: text("character_id")
+      .primaryKey()
+      .references(() => characters.id, { onDelete: "cascade" }),
+    level: integer("level").notNull().default(1),
+    experience: integer("experience").notNull().default(0),
+    currency: integer("currency").notNull().default(0),
+    revision: integer("revision").notNull().default(0),
+    ...timestamps(),
+  },
+  (table) => [
+    check("character_progression_level_positive", sql`${table.level} > 0`),
+    check(
+      "character_progression_experience_nonnegative",
+      sql`${table.experience} >= 0`,
+    ),
+    check(
+      "character_progression_currency_nonnegative",
+      sql`${table.currency} >= 0`,
+    ),
+  ],
+);
+
+export const characterLoadouts = pgTable("character_loadouts", {
+  characterId: text("character_id")
+    .primaryKey()
+    .references(() => characters.id, { onDelete: "cascade" }),
+  contentVersion: text("content_version").notNull(),
+  classId: text("class_id").notNull(),
+  basicAttackId: text("basic_attack_id").notNull(),
+  ability1Id: text("ability_1_id").notNull(),
+  ability2Id: text("ability_2_id").notNull(),
+  ability3Id: text("ability_3_id").notNull(),
+  ability4Id: text("ability_4_id").notNull(),
+  ...timestamps(),
+});
+
+export const characterLocations = pgTable("character_locations", {
+  characterId: text("character_id")
+    .primaryKey()
+    .references(() => characters.id, { onDelete: "cascade" }),
+  logicalMapId: text("logical_map_id").notNull(),
+  entranceId: text("entrance_id").notNull(),
+  ...timestamps(),
+});
+
+export const characterInventory = pgTable(
+  "character_inventory",
+  {
+    characterId: text("character_id")
+      .notNull()
+      .references(() => characters.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull(),
+    quantity: integer("quantity").notNull().default(0),
+    ...timestamps(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.characterId, table.itemId] }),
+    check(
+      "character_inventory_quantity_nonnegative",
+      sql`${table.quantity} >= 0`,
+    ),
+  ],
+);
+
+export const characterEquipment = pgTable(
+  "character_equipment",
+  {
+    characterId: text("character_id")
+      .notNull()
+      .references(() => characters.id, { onDelete: "cascade" }),
+    slot: text("slot").notNull(),
+    itemId: text("item_id").notNull(),
+    ...timestamps(),
+  },
+  (table) => [primaryKey({ columns: [table.characterId, table.slot] })],
+);
+
+export const contentReferences = pgTable(
+  "content_references",
+  {
+    id: text("id").primaryKey(),
+    contentVersion: text("content_version").notNull(),
+    kind: text("kind").notNull(),
+    contentId: text("content_id").notNull(),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex("content_references_version_kind_id_unique").on(
+      table.contentVersion,
+      table.kind,
+      table.contentId,
+    ),
+  ],
+);
+
+export const playTickets = pgTable(
+  "play_tickets",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    characterId: text("character_id")
+      .notNull()
+      .references(() => characters.id, { onDelete: "cascade" }),
+    logicalDestination: text("logical_destination").notNull(),
+    contentVersion: text("content_version").notNull(),
+    nonce: text("nonce").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  },
+  (table) => [uniqueIndex("play_tickets_nonce_unique").on(table.nonce)],
+);

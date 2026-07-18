@@ -1,11 +1,12 @@
-node_modules
-dist
-coverage
-playwright-report
-test-results
+.playwright-cli/
 pnpm-lock.yaml
 AGENTS.md
 CLAUDE.md
 PLAN.md
 docs/agents
 docs/architecture
+node_modules
+dist
+coverage
+playwright-report
+test-results

@@ -22,7 +22,7 @@ import {
 import { moveCharacterFoot, PLAYER_MOVEMENT } from "@gameish/world";
 import { z } from "zod";
 
-import type { DevelopmentPlayTickets } from "../development/play-tickets.js";
+import type { PlayTicketConsumer } from "../identity/play-tickets.js";
 import { MonsterLifecycle } from "../combat/monster-lifecycle.js";
 import { resolveAbility, resolveBasicAttack } from "../combat/resolver.js";
 import {
@@ -187,7 +187,7 @@ interface PlayerCombatState {
 const MAX_PLAYER_HEALTH = 100;
 
 export function createVillageRoom(
-  playTickets: DevelopmentPlayTickets,
+  playTickets: PlayTicketConsumer,
   options: {
     now?: () => number;
     reconnectGraceSeconds?: number;
@@ -997,9 +997,15 @@ export function createVillageRoom(
       if (!options.success) {
         throw new ServerError(4_221, ERROR_CODES.invalidJoinOptions);
       }
-      const consumption = playTickets.consume(options.data.ticket);
+      const consumption = await playTickets.consume(options.data.ticket);
       if (!consumption.success) {
         throw new ServerError(4_223, consumption.code);
+      }
+      if (consumption.admission.logicalDestination !== "map:village") {
+        throw new ServerError(4_224, ERROR_CODES.destinationNotAllowed);
+      }
+      if (consumption.admission.contentVersion !== "content:village_m1_v1") {
+        throw new ServerError(4_225, ERROR_CODES.staleContentVersion);
       }
 
       const player = new PublicPlayer();

@@ -15,6 +15,7 @@ const serverConfigSchema = z
       .string()
       .regex(/^[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:\/.*)?$/)
       .optional(),
+    PUBLIC_ORIGIN: z.string().url().optional(),
     DEVELOPMENT_LOGIN_ENABLED: z
       .enum(["true", "false"])
       .default("false")

@@ -1,10 +1,9 @@
 # Gameish
 
-Gameish is an original browser-first cooperative action RPG. This repository is
-currently includes an authoritative multiplayer-presence slice: two development
-browser sessions can enter one validated village, see public placeholder
-appearances, and move through server-owned fixed-step collision. Durable guest
-identity and game tables remain later milestones.
+Gameish is an original browser-first cooperative action RPG. The repository
+includes an authoritative multiplayer-presence slice plus the production-shaped
+guest character/admission flow: a browser can create or restore a guest identity,
+create/select a character, and receive a one-time village play ticket.
 
 ## Prerequisites
 
@@ -30,6 +29,11 @@ Open `http://127.0.0.1:5173`. The server listens on
   with `DATABASE_UNAVAILABLE` when it does not.
 - `POST /development/play-ticket` exists only when development login is
   explicitly enabled. Its short-lived ticket admits one village-room join.
+
+For the durable account flow, run `pnpm db:migrate` first. The web development
+proxy forwards `/api`, room, and development-ticket requests to the server. The
+server accepts the browser origin configured by `PUBLIC_ORIGIN`; keep it on the
+same approved site as the browser delivery origin.
 
 The server refuses to start if development login is enabled with
 `NODE_ENV=production`. Internal room identity is shown only inside the separately
@@ -75,10 +79,11 @@ pnpm build
 ```
 
 Focused development commands include `pnpm typecheck`,
-`pnpm content:validate`, `pnpm db:generate`, and `pnpm db:migrate`. Review every
-generated SQL migration before applying or committing it. The foundation has no
-durable schema, so its migrations directory contains instructions rather than a
-placeholder game table.
+`pnpm content:validate`, `pnpm db:generate`, `pnpm db:migrate`, and
+`pnpm db:seed`. Review every generated SQL migration before applying or
+committing it. The deterministic seed is intended for the disposable local
+database only; it creates a clearly identified guest sample and initial content
+references and is safe to run repeatedly.
 
 ## Boundaries proven here
 

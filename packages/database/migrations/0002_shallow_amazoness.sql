@@ -1,0 +1,4 @@
+ALTER TABLE "character_inventory" ADD CONSTRAINT "character_inventory_quantity_nonnegative" CHECK ("character_inventory"."quantity" >= 0);--> statement-breakpoint
+ALTER TABLE "character_progression" ADD CONSTRAINT "character_progression_level_positive" CHECK ("character_progression"."level" > 0);--> statement-breakpoint
+ALTER TABLE "character_progression" ADD CONSTRAINT "character_progression_experience_nonnegative" CHECK ("character_progression"."experience" >= 0);--> statement-breakpoint
+ALTER TABLE "character_progression" ADD CONSTRAINT "character_progression_currency_nonnegative" CHECK ("character_progression"."currency" >= 0);
