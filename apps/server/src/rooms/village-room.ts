@@ -262,6 +262,12 @@ export function createVillageRoom(
       if (!monster || !encounter) {
         throw new Error("Village combat encounter is unavailable");
       }
+      const encounterSpawn = villageMap.spawns.find(
+        (spawn) => spawn.entranceId === "mossback_encounter",
+      );
+      if (!encounterSpawn) {
+        throw new Error("Village monster spawn is unavailable");
+      }
       const bossAction = monster.serverOnly.bossActionId
         ? this.#combatCatalog.monsterActions.find(
             (candidate) => candidate.id === monster.serverOnly.bossActionId,
@@ -276,7 +282,10 @@ export function createVillageRoom(
       this.#monsterLifecycle = new MonsterLifecycle({
         entityId: "monster:village_mossback:1",
         monster,
-        encounter,
+        encounter: {
+          ...encounter,
+          spawn: { x: encounterSpawn.x, y: encounterSpawn.y },
+        },
         world: { bounds: villageMap.bounds, obstacles: villageMap.collision },
         rng: this.#rng,
         bossAction,

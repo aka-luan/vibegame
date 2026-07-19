@@ -83,6 +83,12 @@ class VillageScene extends Phaser.Scene {
 
   preload(): void {
     preloadVillageCharacter(this);
+    const background = villageMap.layers.find(
+      (layer) => layer.name === "background",
+    );
+    if (background?.type === "imagelayer") {
+      this.load.image("village-background", `/assets/${background.image}`);
+    }
   }
 
   create(): void {
@@ -114,6 +120,19 @@ class VillageScene extends Phaser.Scene {
     const map = this.make.tilemap({ key: "village-map" });
     const tileset = map.addTilesetImage("village_placeholder", "village-tiles");
     if (!tileset) throw new Error("Could not bind village tileset");
+    const background = villageMap.layers.find(
+      (layer) => layer.name === "background",
+    );
+    if (background?.type === "imagelayer") {
+      this.add
+        .image(
+          (villageMap.width * villageMap.tilewidth) / 2,
+          (villageMap.height * villageMap.tileheight) / 2,
+          "village-background",
+        )
+        .setOrigin(0.5)
+        .setDepth(0);
+    }
     const layerDepths = new Map([
       ["background", 0],
       ["ground", 1],
@@ -123,6 +142,9 @@ class VillageScene extends Phaser.Scene {
       ["effects", 7],
     ]);
     for (const [layerName, depth] of layerDepths) {
+      if (layerName === "background" && background?.type === "imagelayer") {
+        continue;
+      }
       map.createLayer(layerName, tileset, 0, 0)?.setDepth(depth);
     }
 

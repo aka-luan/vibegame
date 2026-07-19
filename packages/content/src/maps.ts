@@ -48,6 +48,19 @@ const tileLayerSchema = z.object({
   y: z.number(),
 });
 
+const imageLayerSchema = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  type: z.literal("imagelayer"),
+  image: z.string().min(1),
+  imagewidth: z.number().int().positive().optional(),
+  imageheight: z.number().int().positive().optional(),
+  opacity: z.number(),
+  visible: z.boolean(),
+  x: z.number(),
+  y: z.number(),
+});
+
 const objectLayerSchema = z.object({
   id: z.number().int(),
   name: z.string(),
@@ -82,12 +95,16 @@ const tiledMapSchema = z.object({
   height: z.number().int().positive(),
   tilewidth: z.number().int().positive(),
   tileheight: z.number().int().positive(),
-  layers: z.array(z.union([tileLayerSchema, objectLayerSchema])),
+  layers: z.array(
+    z.union([tileLayerSchema, imageLayerSchema, objectLayerSchema]),
+  ),
   tilesets: z.array(tilesetSchema).min(1),
 });
 
 type TileLayer = z.infer<typeof tileLayerSchema>;
+type ImageLayer = z.infer<typeof imageLayerSchema>;
 type ObjectLayer = z.infer<typeof objectLayerSchema>;
+type RenderLayer = TileLayer | ImageLayer;
 
 export interface ClientMapArtifact {
   contentVersion: string;
@@ -96,7 +113,7 @@ export interface ClientMapArtifact {
   height: number;
   tilewidth: number;
   tileheight: number;
-  layers: TileLayer[];
+  layers: RenderLayer[];
   tilesets: z.infer<typeof tilesetSchema>[];
   movement: {
     bounds: { x: number; y: number; width: number; height: number };
@@ -246,18 +263,29 @@ export function compileTiledMap(
         ],
       };
     }
-    const expectedType = renderLayerNames.includes(
+    const isRenderLayer = renderLayerNames.includes(
       layerName as (typeof renderLayerNames)[number],
-    )
-      ? "tilelayer"
-      : "objectgroup";
-    if (matchingLayers[0]?.type !== expectedType) {
+    );
+    const actualType = matchingLayers[0]?.type;
+    const validRenderLayer =
+      layerName === "background"
+        ? actualType === "tilelayer" || actualType === "imagelayer"
+        : actualType === "tilelayer";
+    const validLogicalLayer = actualType === "objectgroup";
+    if (
+      (isRenderLayer && !validRenderLayer) ||
+      (!isRenderLayer && !validLogicalLayer)
+    ) {
       return {
         success: false,
         issues: [
           {
             path: `layers.${layerName}`,
-            message: `Layer must be a ${expectedType}`,
+            message: isRenderLayer
+              ? layerName === "background"
+                ? "Layer must be a tilelayer or imagelayer"
+                : "Layer must be a tilelayer"
+              : "Layer must be a objectgroup",
           },
         ],
       };
@@ -364,7 +392,30 @@ export function compileTiledMap(
       ],
     };
   }
+  const insideWalkableGroundRegion = (rectangle: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }) =>
+    navigationObjects.some((navigation) =>
+      containsRectangle(navigation, rectangle),
+    );
   for (const [index, spawn] of spawns.entries()) {
+    if (spawn.type !== "player") {
+      if (!insideWalkableGroundRegion(spawn)) {
+        return {
+          success: false,
+          issues: [
+            {
+              path: `layers.spawns.objects[${String(index)}]`,
+              message: "Spawn must be inside walkable ground region",
+            },
+          ],
+        };
+      }
+      continue;
+    }
     const spawnBody = {
       x: spawn.x + playerCollision.offsetX - playerCollision.width / 2,
       y: spawn.y + playerCollision.offsetY - playerCollision.height / 2,
@@ -416,6 +467,17 @@ export function compileTiledMap(
         ],
       };
     }
+    if (!insideWalkableGroundRegion(portal)) {
+      return {
+        success: false,
+        issues: [
+          {
+            path: `layers.portals.objects[${String(index)}]`,
+            message: "Portal must be inside walkable ground region",
+          },
+        ],
+      };
+    }
     const destinationMap = property(portal, "destination_map");
     if (
       typeof destinationMap !== "string" ||
@@ -463,6 +525,19 @@ export function compileTiledMap(
   }
 
   const interactions = objectLayer("interactives").objects;
+  for (const [index, interactive] of interactions.entries()) {
+    if (!insideWalkableGroundRegion(interactive)) {
+      return {
+        success: false,
+        issues: [
+          {
+            path: `layers.interactives.objects[${String(index)}]`,
+            message: "Interactive must be inside walkable ground region",
+          },
+        ],
+      };
+    }
+  }
   const rectangles = (layer: ObjectLayer) =>
     layer.objects.map(({ x, y, width, height }) => ({ x, y, width, height }));
   const bounds = boundingBox(rectangles(objectLayer("navigation")));
@@ -474,7 +549,7 @@ export function compileTiledMap(
     tilewidth: map.tilewidth,
     tileheight: map.tileheight,
     layers: renderLayerNames.map(
-      (name) => map.layers.find((layer) => layer.name === name) as TileLayer,
+      (name) => map.layers.find((layer) => layer.name === name) as RenderLayer,
     ),
     tilesets: map.tilesets,
     movement: {

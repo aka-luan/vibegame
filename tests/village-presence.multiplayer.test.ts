@@ -315,7 +315,7 @@ describe("village public presence", () => {
       ]);
     });
     expect(observedPlayer(player, player.sessionId)?.x).toBe(128);
-    expect(observedPlayer(player, player.sessionId)?.y).toBe(224);
+    expect(observedPlayer(player, player.sessionId)?.y).toBe(320);
   });
 
   it("bounds movement messages and removes repeat hostile senders", async () => {
@@ -404,7 +404,7 @@ describe("village public presence", () => {
       const latest = authoritativeSnapshots.at(-1);
       expect(latest?.lastProcessedSequence).toBe(1);
       expect(latest?.x).toBeCloseTo(132.6, 4);
-      expect(latest?.y).toBeCloseTo(224, 4);
+      expect(latest?.y).toBeCloseTo(320, 4);
       expect(observedPlayer(reconnecting, entityId)).toBeDefined();
       expect(observedPlayer(observer, entityId)).toBeDefined();
     });

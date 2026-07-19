@@ -252,8 +252,8 @@ describe("durable progress persistence", () => {
         characterId,
         logicalMapId: "map:village",
         entranceId: "village_square",
-        position: { x: 172, y: 224 },
-        safeSpawn: { x: 128, y: 224 },
+        position: { x: 172, y: 320 },
+        safeSpawn: { x: 128, y: 320 },
         connectionState: "disconnected",
         now,
       }),
@@ -268,7 +268,7 @@ describe("durable progress persistence", () => {
     expect(state.location).toMatchObject({
       logicalMapId: "map:village",
       entranceId: "village_square",
-      position: { x: 172, y: 224 },
+      position: { x: 172, y: 320 },
       connectionState: "disconnected",
     });
   });

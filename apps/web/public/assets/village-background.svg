@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1504" height="400" viewBox="0 0 1504 400">
+  <metadata>Original Gameish placeholder. License: CC0-1.0. Source: Gameish project. Export: hand-authored SVG, village-background-v1, 1504x400.</metadata>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8fd1dc"/>
+      <stop offset="1" stop-color="#d9e8bd"/>
+    </linearGradient>
+    <linearGradient id="earth" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8fbd6b"/>
+      <stop offset="1" stop-color="#4e7047"/>
+    </linearGradient>
+  </defs>
+  <rect width="1504" height="400" fill="url(#sky)"/>
+  <circle cx="1260" cy="88" r="44" fill="#fff0ae" opacity=".9"/>
+  <path d="M0 235 C150 185 255 220 390 182 C520 145 635 210 770 170 C920 126 1015 207 1150 165 C1290 122 1390 182 1504 146 V300 H0Z" fill="#7da475" opacity=".8"/>
+  <path d="M0 270 C150 225 285 260 420 214 C575 166 690 252 835 210 C975 169 1100 249 1245 205 C1350 174 1425 215 1504 188 V320 H0Z" fill="#5e895d"/>
+  <g fill="#355c49">
+    <path d="M126 274 l28 -72 28 72z"/><path d="M154 274 l-7 -62 h14z"/>
+    <path d="M458 252 l32 -84 32 84z"/><path d="M490 252 l-8 -73 h16z"/>
+    <path d="M1068 260 l30 -80 30 80z"/><path d="M1098 260 l-8 -70 h16z"/>
+    <path d="M1380 248 l34 -88 34 88z"/><path d="M1414 248 l-8 -76 h16z"/>
+  </g>
+  <g fill="#d58d61" stroke="#754b3b" stroke-width="5">
+    <path d="M690 252 v-54 l45 -38 45 38 v54z"/>
+    <path d="M103 278 v-48 l37 -30 37 30 v48z"/>
+  </g>
+  <g fill="#f2d38a" stroke="#754b3b" stroke-width="4">
+    <path d="M678 198 l57 -48 57 48z"/>
+    <path d="M91 230 l49 -39 49 39z"/>
+  </g>
+  <path d="M0 282 C260 270 430 300 650 282 C860 265 1080 302 1504 276 V400 H0Z" fill="url(#earth)"/>
+  <path d="M0 291 C240 280 430 311 650 294 C900 275 1120 314 1504 288" fill="none" stroke="#b4d77b" stroke-width="9"/>
+  <path d="M90 400 C255 344 390 344 548 400 M890 400 C1020 348 1160 345 1320 400" fill="none" stroke="#c1935f" stroke-width="28" opacity=".8"/>
+  <g fill="#d1e692" opacity=".9">
+    <circle cx="235" cy="335" r="5"/><circle cx="253" cy="348" r="4"/><circle cx="602" cy="328" r="5"/>
+    <circle cx="848" cy="346" r="4"/><circle cx="1268" cy="330" r="5"/><circle cx="1462" cy="350" r="4"/>
+  </g>
+</svg>

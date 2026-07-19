@@ -1,6 +1,31 @@
 import { describe, expect, it } from "vitest";
 
+import villageMapSource from "../maps/village.tiled.json" with { type: "json" };
 import { compileTiledMap } from "./maps.js";
+
+type FixtureObject = {
+  id: number;
+  name: string;
+  type: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  properties?: { name: string; type: string; value: unknown }[];
+};
+
+type FixtureLayer = {
+  id: number;
+  name: string;
+  type: string;
+  objects?: FixtureObject[];
+  [key: string]: unknown;
+};
+
+type FixtureMap = {
+  layers: FixtureLayer[];
+  [key: string]: unknown;
+};
 
 const renderLayerNames = [
   "background",
@@ -46,7 +71,7 @@ function objectLayer(name: string, id: number, objects: unknown[] = []) {
   };
 }
 
-function validMap() {
+function validMap(): FixtureMap {
   return {
     type: "map",
     version: "1.10",
@@ -120,7 +145,7 @@ function validMap() {
         imageheight: 16,
       },
     ],
-  };
+  } as FixtureMap;
 }
 
 describe("Tiled map compiler", () => {
@@ -131,6 +156,35 @@ describe("Tiled map compiler", () => {
       width: 10,
       height: 7,
     });
+
+  it("compiles the re-authored village as a wide side-view scene", () => {
+    const result = compileVillage(villageMapSource);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    expect(result.client.width * result.client.tilewidth).toBe(1504);
+    expect(result.client.height * result.client.tileheight).toBe(400);
+    expect(result.client.layers[0]).toMatchObject({
+      name: "background",
+      type: "imagelayer",
+      image: "village-background.svg",
+    });
+    expect(result.server.bounds).toEqual({
+      x: 0,
+      y: 256,
+      width: 1504,
+      height: 128,
+    });
+    expect(result.server.spawns).toEqual([
+      { entranceId: "village_square", kind: "player", x: 128, y: 320 },
+      {
+        entranceId: "mossback_encounter",
+        kind: "monster",
+        x: 300,
+        y: 320,
+      },
+    ]);
+  });
 
   it("separates rendering data from authoritative geometry", () => {
     const result = compileVillage(validMap());
@@ -155,6 +209,57 @@ describe("Tiled map compiler", () => {
     ]);
     expect(JSON.stringify(result.server)).not.toContain("tilesets");
     expect(JSON.stringify(result.server)).not.toContain("Read notice");
+  });
+
+  it("keeps a painted image background in the client artifact", () => {
+    const input = validMap();
+    input.layers[0] = {
+      id: 1,
+      name: "background",
+      type: "imagelayer",
+      image: "village-background.svg",
+      opacity: 1,
+      visible: true,
+      x: 0,
+      y: 0,
+    };
+
+    const result = compileVillage(input);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    expect(result.client.layers[0]).toMatchObject({
+      name: "background",
+      type: "imagelayer",
+      image: "village-background.svg",
+    });
+    expect(JSON.stringify(result.server)).not.toContain(
+      "village-background.svg",
+    );
+  });
+
+  it("rejects an image layer outside the background role", () => {
+    const input = validMap();
+    input.layers[1] = {
+      id: 2,
+      name: "ground",
+      type: "imagelayer",
+      image: "village-background.svg",
+      opacity: 1,
+      visible: true,
+      x: 0,
+      y: 0,
+    };
+
+    expect(compileVillage(input)).toEqual({
+      success: false,
+      issues: [
+        {
+          path: "layers.ground",
+          message: "Layer must be a tilelayer",
+        },
+      ],
+    });
   });
 
   it.each([...renderLayerNames, ...logicalLayerNames])(
@@ -213,7 +318,7 @@ describe("Tiled map compiler", () => {
     const spawns = input.layers.find((layer) => layer.name === "spawns");
     if (!spawns || !("objects" in spawns)) throw new Error("fixture");
     spawns.objects[0] = {
-      ...(spawns.objects[0] as Record<string, unknown>),
+      ...spawns.objects[0]!,
       x: 1_000,
     };
 
@@ -251,7 +356,7 @@ describe("Tiled map compiler", () => {
     const spawns = input.layers.find((layer) => layer.name === "spawns");
     if (!spawns || !("objects" in spawns)) throw new Error("fixture");
     spawns.objects[0] = {
-      ...(spawns.objects[0] as Record<string, unknown>),
+      ...spawns.objects[0]!,
       x: 36,
       y: 20,
     };
@@ -272,7 +377,7 @@ describe("Tiled map compiler", () => {
     const spawns = input.layers.find((layer) => layer.name === "spawns");
     if (!spawns || !("objects" in spawns)) throw new Error("fixture");
     spawns.objects[0] = {
-      ...(spawns.objects[0] as Record<string, unknown>),
+      ...spawns.objects[0]!,
       x: 1,
       y: 8,
     };
@@ -310,6 +415,97 @@ describe("Tiled map compiler", () => {
         {
           path: "layers.portals.objects[0]",
           message: "Portal must be a positive rectangle inside map bounds",
+        },
+      ],
+    });
+  });
+
+  it.each(["interactives", "portals"] as const)(
+    "rejects a %s placement outside the walkable ground region",
+    (layerName) => {
+      const input = validMap();
+      const navigation = input.layers.find(
+        (candidate) => candidate.name === "navigation",
+      );
+      if (!navigation || !("objects" in navigation)) throw new Error("fixture");
+      navigation.objects[0]!.height = 24;
+      const layer = input.layers.find(
+        (candidate) => candidate.name === layerName,
+      );
+      if (!layer || !("objects" in layer)) throw new Error("fixture");
+      layer.objects.push(
+        layerName === "interactives"
+          ? {
+              id: 20,
+              name: "sky_notice",
+              type: "interaction",
+              x: 16,
+              y: 32,
+              width: 8,
+              height: 8,
+            }
+          : {
+              id: 21,
+              name: "sky_exit",
+              type: "portal",
+              x: 16,
+              y: 32,
+              width: 8,
+              height: 8,
+              properties: [
+                {
+                  name: "destination_map",
+                  type: "string",
+                  value: "map:forest",
+                },
+                {
+                  name: "destination_entrance",
+                  type: "string",
+                  value: "forest_entry",
+                },
+              ],
+            },
+      );
+
+      const result = compileVillage(input);
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.issues[0]?.message).toBe(
+        layerName === "interactives"
+          ? "Interactive must be inside walkable ground region"
+          : "Portal must be inside walkable ground region",
+      );
+    },
+  );
+
+  it("rejects a non-player spawn outside the walkable ground region", () => {
+    const input = validMap();
+    const navigation = input.layers.find(
+      (candidate) => candidate.name === "navigation",
+    );
+    const spawns = input.layers.find(
+      (candidate) => candidate.name === "spawns",
+    );
+    if (!navigation || !navigation.objects || !spawns || !spawns.objects) {
+      throw new Error("fixture");
+    }
+    navigation.objects[0]!.height = 24;
+    spawns.objects.push({
+      id: 22,
+      name: "sky_monster",
+      type: "monster",
+      x: 16,
+      y: 32,
+      width: 0,
+      height: 0,
+    });
+
+    expect(compileVillage(input)).toEqual({
+      success: false,
+      issues: [
+        {
+          path: "layers.spawns.objects[1]",
+          message: "Spawn must be inside walkable ground region",
         },
       ],
     });
