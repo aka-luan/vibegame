@@ -201,6 +201,58 @@ function boundingBox(
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
+/**
+ * Whether the union of `regions` fully covers `target`, so a placement
+ * straddling the seam between two abutting rectangles still counts as
+ * inside. Splits `target` into a coordinate-compressed grid of cells and
+ * requires each cell to be contained by at least one region.
+ */
+function coversRectangle(
+  regions: { x: number; y: number; width: number; height: number }[],
+  target: { x: number; y: number; width: number; height: number },
+): boolean {
+  if (target.width === 0 || target.height === 0) {
+    return regions.some((region) => containsRectangle(region, target));
+  }
+
+  const targetRight = target.x + target.width;
+  const targetBottom = target.y + target.height;
+  const xs = new Set<number>([target.x, targetRight]);
+  const ys = new Set<number>([target.y, targetBottom]);
+  for (const region of regions) {
+    const regionRight = region.x + region.width;
+    const regionBottom = region.y + region.height;
+    if (region.x > target.x && region.x < targetRight) xs.add(region.x);
+    if (regionRight > target.x && regionRight < targetRight) {
+      xs.add(regionRight);
+    }
+    if (region.y > target.y && region.y < targetBottom) ys.add(region.y);
+    if (regionBottom > target.y && regionBottom < targetBottom) {
+      ys.add(regionBottom);
+    }
+  }
+  const sortedXs = [...xs].sort((first, second) => first - second);
+  const sortedYs = [...ys].sort((first, second) => first - second);
+
+  for (let i = 0; i < sortedXs.length - 1; i += 1) {
+    const cellLeft = sortedXs[i]!;
+    const cellRight = sortedXs[i + 1]!;
+    for (let j = 0; j < sortedYs.length - 1; j += 1) {
+      const cellTop = sortedYs[j]!;
+      const cellBottom = sortedYs[j + 1]!;
+      const cellCovered = regions.some(
+        (region) =>
+          region.x <= cellLeft &&
+          region.x + region.width >= cellRight &&
+          region.y <= cellTop &&
+          region.y + region.height >= cellBottom,
+      );
+      if (!cellCovered) return false;
+    }
+  }
+  return true;
+}
+
 export function compileTiledMap(
   mapId: string,
   contentVersion: string,
@@ -242,6 +294,8 @@ export function compileTiledMap(
   }
 
   const map = parsed.data;
+  const mapPixelWidth = map.width * map.tilewidth;
+  const mapPixelHeight = map.height * map.tileheight;
   const requiredLayers = [...renderLayerNames, ...logicalLayerNames];
   for (const layerName of requiredLayers) {
     const matchingLayers = map.layers.filter(
@@ -266,11 +320,11 @@ export function compileTiledMap(
     const isRenderLayer = renderLayerNames.includes(
       layerName as (typeof renderLayerNames)[number],
     );
+    const isBackgroundLayer = layerName === "background";
     const actualType = matchingLayers[0]?.type;
-    const validRenderLayer =
-      layerName === "background"
-        ? actualType === "tilelayer" || actualType === "imagelayer"
-        : actualType === "tilelayer";
+    const validRenderLayer = isBackgroundLayer
+      ? actualType === "tilelayer" || actualType === "imagelayer"
+      : actualType === "tilelayer";
     const validLogicalLayer = actualType === "objectgroup";
     if (
       (isRenderLayer && !validRenderLayer) ||
@@ -282,7 +336,7 @@ export function compileTiledMap(
           {
             path: `layers.${layerName}`,
             message: isRenderLayer
-              ? layerName === "background"
+              ? isBackgroundLayer
                 ? "Layer must be a tilelayer or imagelayer"
                 : "Layer must be a tilelayer"
               : "Layer must be a objectgroup",
@@ -306,6 +360,25 @@ export function compileTiledMap(
           },
         ],
       };
+    }
+    if (layer.type === "imagelayer") {
+      const { imagewidth, imageheight } = layer;
+      const dimensionsDeclared =
+        imagewidth !== undefined || imageheight !== undefined;
+      const dimensionsMatchMap =
+        imagewidth === mapPixelWidth && imageheight === mapPixelHeight;
+      if (dimensionsDeclared && !dimensionsMatchMap) {
+        return {
+          success: false,
+          issues: [
+            {
+              path: `layers.${layer.name}`,
+              message:
+                "Background image dimensions must match the map pixel size",
+            },
+          ],
+        };
+      }
     }
   }
 
@@ -346,8 +419,6 @@ export function compileTiledMap(
     }
     objectIds.add(object.id);
   }
-  const mapPixelWidth = map.width * map.tilewidth;
-  const mapPixelHeight = map.height * map.tileheight;
   const spawns = objectLayer("spawns").objects;
   const playerSpawns = spawns.filter((spawn) => spawn.type === "player");
   if (playerSpawns.length !== 1) {
@@ -397,23 +468,21 @@ export function compileTiledMap(
     y: number;
     width: number;
     height: number;
-  }) =>
-    navigationObjects.some((navigation) =>
-      containsRectangle(navigation, rectangle),
-    );
+  }) => coversRectangle(navigationObjects, rectangle);
+  const requireInsideWalkableGroundRegion = (
+    object: { x: number; y: number; width: number; height: number },
+    path: string,
+    message: string,
+  ): ContentValidationIssue[] | null =>
+    insideWalkableGroundRegion(object) ? null : [{ path, message }];
   for (const [index, spawn] of spawns.entries()) {
     if (spawn.type !== "player") {
-      if (!insideWalkableGroundRegion(spawn)) {
-        return {
-          success: false,
-          issues: [
-            {
-              path: `layers.spawns.objects[${String(index)}]`,
-              message: "Spawn must be inside walkable ground region",
-            },
-          ],
-        };
-      }
+      const regionIssues = requireInsideWalkableGroundRegion(
+        spawn,
+        `layers.spawns.objects[${String(index)}]`,
+        "Spawn must be inside walkable ground region",
+      );
+      if (regionIssues) return { success: false, issues: regionIssues };
       continue;
     }
     const spawnBody = {
@@ -430,9 +499,7 @@ export function compileTiledMap(
       collisionObjects.some((collision) =>
         rectanglesOverlap(collision, spawnBody),
       ) ||
-      !navigationObjects.some((navigation) =>
-        containsRectangle(navigation, spawnBody),
-      )
+      !insideWalkableGroundRegion(spawnBody)
     ) {
       return {
         success: false,
@@ -467,16 +534,13 @@ export function compileTiledMap(
         ],
       };
     }
-    if (!insideWalkableGroundRegion(portal)) {
-      return {
-        success: false,
-        issues: [
-          {
-            path: `layers.portals.objects[${String(index)}]`,
-            message: "Portal must be inside walkable ground region",
-          },
-        ],
-      };
+    const portalRegionIssues = requireInsideWalkableGroundRegion(
+      portal,
+      `layers.portals.objects[${String(index)}]`,
+      "Portal must be inside walkable ground region",
+    );
+    if (portalRegionIssues) {
+      return { success: false, issues: portalRegionIssues };
     }
     const destinationMap = property(portal, "destination_map");
     if (
@@ -526,16 +590,13 @@ export function compileTiledMap(
 
   const interactions = objectLayer("interactives").objects;
   for (const [index, interactive] of interactions.entries()) {
-    if (!insideWalkableGroundRegion(interactive)) {
-      return {
-        success: false,
-        issues: [
-          {
-            path: `layers.interactives.objects[${String(index)}]`,
-            message: "Interactive must be inside walkable ground region",
-          },
-        ],
-      };
+    const interactiveRegionIssues = requireInsideWalkableGroundRegion(
+      interactive,
+      `layers.interactives.objects[${String(index)}]`,
+      "Interactive must be inside walkable ground region",
+    );
+    if (interactiveRegionIssues) {
+      return { success: false, issues: interactiveRegionIssues };
     }
   }
   const rectangles = (layer: ObjectLayer) =>

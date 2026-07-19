@@ -263,7 +263,7 @@
       {
         "id": "encounter:village_mossback",
         "monsterId": "monster:mossback",
-        "spawn": { "x": 300, "y": 256 }
+        "spawn": { "x": 300, "y": 320 }
       }
     ],
     "loot": [

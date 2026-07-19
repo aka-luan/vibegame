@@ -52,7 +52,7 @@ async function compileCanonicalAssets(): Promise<void> {
 
   const map = compileTiledMap(
     "map:village",
-    "content:village_m1_v1",
+    "content:village_m1_v2",
     await readJson("maps/village.tiled.json"),
     manifest.data.collision,
   );

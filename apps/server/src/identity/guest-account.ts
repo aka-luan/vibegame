@@ -12,7 +12,7 @@ export const GUEST_COOKIE_NAME = "gameish_guest";
 export const GUEST_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 export const GUEST_SESSION_ROTATION_MS = 24 * 60 * 60 * 1_000;
 export const PLAY_TICKET_TTL_MS = 15_000;
-export const VILLAGE_CONTENT_VERSION = "content:village_m1_v1" as const;
+export const VILLAGE_CONTENT_VERSION = "content:village_m1_v2" as const;
 export const VILLAGE_DESTINATION = "map:village" as const;
 
 export interface AccountRepository {

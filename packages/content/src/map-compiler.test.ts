@@ -238,6 +238,51 @@ describe("Tiled map compiler", () => {
     );
   });
 
+  it("rejects a background image whose declared size does not match the map", () => {
+    const input = validMap();
+    input.layers[0] = {
+      id: 1,
+      name: "background",
+      type: "imagelayer",
+      image: "village-background.svg",
+      imagewidth: 999,
+      imageheight: 999,
+      opacity: 1,
+      visible: true,
+      x: 0,
+      y: 0,
+    };
+
+    expect(compileVillage(input)).toEqual({
+      success: false,
+      issues: [
+        {
+          path: "layers.background",
+          message: "Background image dimensions must match the map pixel size",
+        },
+      ],
+    });
+  });
+
+  it("accepts a background image whose declared size matches the map", () => {
+    const input = validMap();
+    input.layers[0] = {
+      id: 1,
+      name: "background",
+      type: "imagelayer",
+      image: "village-background.svg",
+      imagewidth: 64,
+      imageheight: 48,
+      opacity: 1,
+      visible: true,
+      x: 0,
+      y: 0,
+    };
+
+    const result = compileVillage(input);
+    expect(result.success).toBe(true);
+  });
+
   it("rejects an image layer outside the background role", () => {
     const input = validMap();
     input.layers[1] = {
@@ -509,5 +554,49 @@ describe("Tiled map compiler", () => {
         },
       ],
     });
+  });
+
+  it("accepts a placement straddling the seam between two abutting navigation rectangles", () => {
+    const input = validMap();
+    const navigation = input.layers.find(
+      (candidate) => candidate.name === "navigation",
+    );
+    if (!navigation || !("objects" in navigation)) throw new Error("fixture");
+    navigation.objects = [
+      {
+        id: 6,
+        name: "walkable_west",
+        type: "navigation",
+        x: 0,
+        y: 0,
+        width: 32,
+        height: 48,
+      },
+      {
+        id: 23,
+        name: "walkable_east",
+        type: "navigation",
+        x: 32,
+        y: 0,
+        width: 32,
+        height: 48,
+      },
+    ];
+    const interactives = input.layers.find(
+      (candidate) => candidate.name === "interactives",
+    );
+    if (!interactives || !("objects" in interactives)) {
+      throw new Error("fixture");
+    }
+    interactives.objects[0] = {
+      ...interactives.objects[0]!,
+      x: 24,
+      y: 16,
+      width: 16,
+      height: 8,
+    };
+
+    const result = compileVillage(input);
+    expect(result.success).toBe(true);
   });
 });

@@ -55,7 +55,7 @@ describe("server monster lifecycle", () => {
     });
 
     lifecycle.tick(0, [{ id: "player:one", x: 330, y: 256 }]);
-    lifecycle.tick(100, [{ id: "player:one", x: 500, y: 384 }]);
+    lifecycle.tick(100, [{ id: "player:one", x: 40, y: 384 }]);
 
     expect(lifecycle.state.targetId).toBeNull();
     expect(lifecycle.state.state).toBe("leashing");

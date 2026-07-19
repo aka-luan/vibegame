@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1504" height="400" viewBox="0 0 1504 400">
-  <metadata>Original Gameish placeholder. License: CC0-1.0. Source: Gameish project. Export: hand-authored SVG, village-background-v1, 1504x400.</metadata>
+  <metadata>Original Gameish placeholder. License: CC0-1.0. Source: Gameish project. Export: hand-authored SVG, village-background-v1, 1504x400. Provenance record: apps/web/src/world/background-asset-manifest.ts (background:village).</metadata>
   <defs>
     <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#8fd1dc"/>

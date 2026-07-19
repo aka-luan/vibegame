@@ -8,7 +8,7 @@ export interface DevelopmentAdmission {
   partyId: string | undefined;
   displayName: string;
   logicalDestination: "map:village";
-  contentVersion: "content:village_m1_v1";
+  contentVersion: "content:village_m1_v2";
   nonce: string;
   appearance: {
     rigId: string;
@@ -51,7 +51,7 @@ export class DevelopmentPlayTickets {
         partyId: options.partyId,
         displayName,
         logicalDestination: "map:village",
-        contentVersion: "content:village_m1_v1",
+        contentVersion: "content:village_m1_v2",
         nonce: randomUUID(),
         appearance: {
           rigId: "rig:village_placeholder",
