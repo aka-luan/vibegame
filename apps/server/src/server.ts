@@ -7,6 +7,7 @@ import type {
 import { Server } from "@colyseus/core";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { ROOM_NAMES } from "@gameish/protocol";
+import type { LocationCheckpointInput } from "@gameish/database";
 import type { FastifyInstance } from "fastify";
 
 import { createHttpApp, type ReadinessProbe } from "./http/app.js";
@@ -18,6 +19,8 @@ import {
 } from "./identity/play-tickets.js";
 import { PrivacySpikeRoom } from "./rooms/privacy-spike-room.js";
 import { createVillageRoom } from "./rooms/village-room.js";
+import type { QuestPersistence } from "./quests/persistence.js";
+import type { RewardPersistence } from "./rewards/persistence.js";
 
 export interface StartFoundationServerOptions {
   host: string;
@@ -31,6 +34,10 @@ export interface StartFoundationServerOptions {
   runtimeEnvironment?: "development" | "test" | "production" | undefined;
   now?: (() => number) | undefined;
   reconnectGraceSeconds?: number | undefined;
+  rewardPersistence?: RewardPersistence | undefined;
+  questPersistence?: QuestPersistence | undefined;
+  checkpointLocation?:
+    ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
   logger?: boolean | undefined;
 }
 
@@ -114,6 +121,15 @@ export async function startFoundationServer(
         ...(options.reconnectGraceSeconds === undefined
           ? {}
           : { reconnectGraceSeconds: options.reconnectGraceSeconds }),
+        ...(options.rewardPersistence === undefined
+          ? {}
+          : { rewardPersistence: options.rewardPersistence }),
+        ...(options.questPersistence === undefined
+          ? {}
+          : { questPersistence: options.questPersistence }),
+        ...(options.checkpointLocation === undefined
+          ? {}
+          : { checkpointLocation: options.checkpointLocation }),
         recordLifecycle(event) {
           app.log.info({ event }, "Village connection lifecycle changed");
         },

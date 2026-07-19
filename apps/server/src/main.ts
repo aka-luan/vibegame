@@ -1,17 +1,28 @@
 import { assertCanonicalContent } from "@gameish/content/canonical";
-import { connectDatabase, GuestAccountRepository } from "@gameish/database";
+import {
+  connectDatabase,
+  DurableStateRepository,
+  GuestAccountRepository,
+} from "@gameish/database";
 
 import { parseServerConfig } from "./config.js";
 import { startFoundationServer } from "./server.js";
 import { GuestAccountService } from "./identity/guest-account.js";
 import { DatabasePlayTickets } from "./identity/play-tickets.js";
+import {
+  PostgresQuestPersistence,
+  PostgresRewardPersistence,
+} from "./persistence/durable-state.js";
 
 const config = parseServerConfig(process.env);
 await assertCanonicalContent();
 const database = connectDatabase(config.DATABASE_URL);
 const accountRepository = new GuestAccountRepository(database.db);
+const durableState = new DurableStateRepository(database.db);
 const accountService = new GuestAccountService(accountRepository);
 const playTickets = new DatabasePlayTickets(accountRepository);
+const questPersistence = new PostgresQuestPersistence(durableState);
+const rewardPersistence = new PostgresRewardPersistence(durableState);
 const publicAddress =
   config.PUBLIC_GAME_SERVER_ADDRESS ??
   (config.DEVELOPMENT_LOGIN_ENABLED
@@ -25,6 +36,9 @@ const server = await startFoundationServer({
   readinessProbe: database,
   accountService,
   playTickets,
+  questPersistence,
+  rewardPersistence,
+  checkpointLocation: (input) => durableState.checkpointLocation(input),
   developmentLoginEnabled: config.DEVELOPMENT_LOGIN_ENABLED,
   runtimeEnvironment: config.NODE_ENV,
 });

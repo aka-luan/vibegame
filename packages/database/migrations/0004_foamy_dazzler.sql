@@ -1,0 +1,1 @@
+ALTER TABLE "character_locations" ADD CONSTRAINT "character_locations_connection_state_valid" CHECK ("character_locations"."connection_state" in ('online', 'disconnected', 'offline'));

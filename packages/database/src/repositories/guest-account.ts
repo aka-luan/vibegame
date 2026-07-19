@@ -1,6 +1,8 @@
 import { and, eq, gt, isNull } from "drizzle-orm";
 
 import type { GameDatabase } from "../index.js";
+import type { DurableCharacterState } from "./durable-state.js";
+import { DurableStateRepository } from "./durable-state.js";
 import {
   characterAppearance,
   characterEquipment,
@@ -91,6 +93,7 @@ export interface PlayTicketAdmission {
     baseLayerId: string;
     armorLayerId: string;
   };
+  characterState?: DurableCharacterState;
 }
 
 export type PlayTicketFailure = "invalid" | "expired" | "replayed";
@@ -499,6 +502,7 @@ export class GuestAccountRepository {
       .limit(1);
     if (!admission)
       throw new Error("Consumed play ticket has incomplete state");
+    const characterState = await this.loadCharacterState(admission.characterId);
     return {
       success: true,
       admission: {
@@ -513,8 +517,13 @@ export class GuestAccountRepository {
           baseLayerId: admission.baseLayerId,
           armorLayerId: admission.armorLayerId,
         },
+        characterState,
       },
     };
+  }
+
+  loadCharacterState(characterId: string): Promise<DurableCharacterState> {
+    return new DurableStateRepository(this.db).loadCharacterState(characterId);
   }
 }
 

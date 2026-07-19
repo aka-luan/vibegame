@@ -6,6 +6,7 @@ import { Pool } from "pg";
 import * as schema from "./schema.js";
 
 export * from "./repositories/guest-account.js";
+export * from "./repositories/durable-state.js";
 export * from "./schema.js";
 
 export type GameDatabase = NodePgDatabase<typeof schema>;

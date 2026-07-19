@@ -5,6 +5,10 @@ import villageCharacter from "@gameish/content/village-character";
 import villageMap from "@gameish/content/village-map-server";
 import villageDialogue from "@gameish/content/village-dialogue-server";
 import villageQuests from "@gameish/content/village-quests-server";
+import type {
+  DurableCharacterState,
+  LocationCheckpointInput,
+} from "@gameish/database";
 import type { CombatCatalog, CombatEffect } from "@gameish/content/combat";
 import type { DialogueQuestAction } from "@gameish/content/dialogue";
 import {
@@ -196,6 +200,8 @@ export function createVillageRoom(
     rewardRng?: () => number;
     rewardPersistence?: RewardPersistence;
     questPersistence?: QuestPersistence;
+    checkpointLocation?:
+      ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
     recordLifecycle?: (
       event: "disconnected" | "reconnected" | "removed",
     ) => void;
@@ -219,6 +225,7 @@ export function createVillageRoom(
     readonly #questPersistence =
       options.questPersistence ??
       new InMemoryQuestPersistence("quest:forest_mossbacks");
+    readonly #checkpointLocation = options.checkpointLocation;
     readonly #questDefinition = villageQuests.quests.find(
       (quest) => quest.id === "quest:forest_mossbacks",
     );
@@ -240,6 +247,7 @@ export function createVillageRoom(
     readonly #lastDialogueActionAtMs = new Map<string, number>();
     readonly #joinedAtMs = new Map<string, number>();
     readonly #lastActivityAtMs = new Map<string, number>();
+    readonly #lastCheckpointAtMs = new Map<string, number>();
     readonly #disconnectedSessions = new Set<string>();
     #participationWindow!: ParticipationWindow;
     #defeatSequence = 0;
@@ -1014,8 +1022,11 @@ export function createVillageRoom(
         (candidate) => candidate.entranceId === "village_square",
       );
       if (!spawn) throw new Error("Village player spawn is unavailable");
-      player.x = spawn.x;
-      player.y = spawn.y;
+      const savedPosition = validSavedPosition(
+        consumption.admission.characterState,
+      );
+      player.x = savedPosition?.x ?? spawn.x;
+      player.y = savedPosition?.y ?? spawn.y;
       player.appearance.assign(consumption.admission.appearance);
       this.state.players.set(client.sessionId, player);
       this.#playerIdentity.set(client.sessionId, {
@@ -1028,7 +1039,7 @@ export function createVillageRoom(
       );
       this.#questSnapshots.set(client.sessionId, questSnapshot);
       this.#characterDialogueState.set(client.sessionId, {
-        level: 1,
+        level: consumption.admission.characterState?.progression.level ?? 1,
         flags: new Set(),
         completedQuestIds: new Set(),
         questStatuses: new Map([[questSnapshot.questId, questSnapshot.status]]),
@@ -1052,11 +1063,13 @@ export function createVillageRoom(
         statuses: new Map(),
         recentActionIds: [],
       });
+      this.#checkpoint(client.sessionId, "online");
       this.#sendCombatState(client);
       this.#sendQuestState(client);
     }
 
     override onLeave(client: Client) {
+      this.#checkpoint(client.sessionId, "offline");
       this.#pendingIntentions.delete(client.sessionId);
       this.#intentionViolations.delete(client.sessionId);
       this.#lastProcessedSequences.delete(client.sessionId);
@@ -1068,6 +1081,7 @@ export function createVillageRoom(
       this.#lastInteractionAtMs.delete(client.sessionId);
       this.#lastDialogueActionAtMs.delete(client.sessionId);
       this.#joinedAtMs.delete(client.sessionId);
+      this.#lastCheckpointAtMs.delete(client.sessionId);
       this.#disconnectedSessions.delete(client.sessionId);
       this.state.players.delete(client.sessionId);
       options.recordLifecycle?.("removed");
@@ -1075,6 +1089,7 @@ export function createVillageRoom(
 
     override onDrop(client: Client) {
       if (!this.state.players.has(client.sessionId)) return;
+      this.#checkpoint(client.sessionId, "disconnected");
       this.#disconnectedSessions.add(client.sessionId);
       options.recordLifecycle?.("disconnected");
       void this.allowReconnection(client, this.#reconnectGraceSeconds).catch(
@@ -1084,6 +1099,7 @@ export function createVillageRoom(
 
     override onReconnect(client: Client) {
       this.#disconnectedSessions.delete(client.sessionId);
+      this.#checkpoint(client.sessionId, "online");
       options.recordLifecycle?.("reconnected");
       this.#sendAuthoritativeMovement(client);
     }
@@ -1152,6 +1168,12 @@ export function createVillageRoom(
         player.y = moved.y;
         this.#sendAuthoritativeMovementBySessionId(sessionId);
         if (combat) this.#sendCombatStateBySessionId(sessionId);
+      }
+      for (const sessionId of this.state.players.keys()) {
+        const lastCheckpointAtMs = this.#lastCheckpointAtMs.get(sessionId) ?? 0;
+        if (this.state.serverTimeMs >= lastCheckpointAtMs + 5_000) {
+          this.#checkpoint(sessionId, "online");
+        }
       }
       const lifecycleEvents = this.#monsterLifecycle.tick(
         this.state.serverTimeMs,
@@ -1223,6 +1245,29 @@ export function createVillageRoom(
           });
         }
       }
+    }
+
+    #checkpoint(
+      sessionId: string,
+      connectionState: LocationCheckpointInput["connectionState"],
+    ): void {
+      if (!this.#checkpointLocation) return;
+      const player = this.state.players.get(sessionId);
+      const identity = this.#playerIdentity.get(sessionId);
+      const spawn = villageMap.spawns.find(
+        (candidate) => candidate.entranceId === "village_square",
+      );
+      if (!player || !identity || !spawn) return;
+      this.#lastCheckpointAtMs.set(sessionId, this.state.serverTimeMs);
+      void this.#checkpointLocation({
+        characterId: identity.characterId,
+        logicalMapId: "map:village",
+        entranceId: "village_square",
+        position: { x: player.x, y: player.y },
+        safeSpawn: { x: spawn.x, y: spawn.y },
+        connectionState,
+        now: new Date(this.state.serverTimeMs),
+      }).catch(() => undefined);
     }
 
     #applyEffectsToPlayer(
@@ -1428,4 +1473,49 @@ export function createVillageRoom(
       client.send(SERVER_MESSAGES.authoritativeMovement, snapshot);
     }
   };
+}
+
+function validSavedPosition(
+  state: DurableCharacterState | undefined,
+): { x: number; y: number } | undefined {
+  const location = state?.location;
+  if (
+    !location ||
+    location.logicalMapId !== "map:village" ||
+    !villageMap.spawns.some((spawn) => spawn.entranceId === location.entranceId)
+  ) {
+    return undefined;
+  }
+  const { x, y } = location.position;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined;
+  const body = {
+    x:
+      x +
+      villageCharacter.collision.offsetX -
+      villageCharacter.collision.width / 2,
+    y:
+      y +
+      villageCharacter.collision.offsetY -
+      villageCharacter.collision.height / 2,
+    width: villageCharacter.collision.width,
+    height: villageCharacter.collision.height,
+  };
+  const insideBounds =
+    body.x >= villageMap.bounds.x &&
+    body.y >= villageMap.bounds.y &&
+    body.x + body.width <= villageMap.bounds.x + villageMap.bounds.width &&
+    body.y + body.height <= villageMap.bounds.y + villageMap.bounds.height;
+  if (!insideBounds) return undefined;
+  if (
+    villageMap.collision.some(
+      (obstacle) =>
+        body.x < obstacle.x + obstacle.width &&
+        body.x + body.width > obstacle.x &&
+        body.y < obstacle.y + obstacle.height &&
+        body.y + body.height > obstacle.y,
+    )
+  ) {
+    return undefined;
+  }
+  return { x, y };
 }

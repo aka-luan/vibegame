@@ -4,6 +4,7 @@ import {
   pgTable,
   primaryKey,
   check,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -114,14 +115,28 @@ export const characterLoadouts = pgTable("character_loadouts", {
   ...timestamps(),
 });
 
-export const characterLocations = pgTable("character_locations", {
-  characterId: text("character_id")
-    .primaryKey()
-    .references(() => characters.id, { onDelete: "cascade" }),
-  logicalMapId: text("logical_map_id").notNull(),
-  entranceId: text("entrance_id").notNull(),
-  ...timestamps(),
-});
+export const characterLocations = pgTable(
+  "character_locations",
+  {
+    characterId: text("character_id")
+      .primaryKey()
+      .references(() => characters.id, { onDelete: "cascade" }),
+    logicalMapId: text("logical_map_id").notNull(),
+    entranceId: text("entrance_id").notNull(),
+    positionX: real("position_x").notNull().default(0),
+    positionY: real("position_y").notNull().default(0),
+    safeSpawnX: real("safe_spawn_x").notNull().default(0),
+    safeSpawnY: real("safe_spawn_y").notNull().default(0),
+    connectionState: text("connection_state").notNull().default("offline"),
+    ...timestamps(),
+  },
+  (table) => [
+    check(
+      "character_locations_connection_state_valid",
+      sql`${table.connectionState} in ('online', 'disconnected', 'offline')`,
+    ),
+  ],
+);
 
 export const characterInventory = pgTable(
   "character_inventory",
@@ -191,4 +206,85 @@ export const playTickets = pgTable(
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
   },
   (table) => [uniqueIndex("play_tickets_nonce_unique").on(table.nonce)],
+);
+
+export const characterQuests = pgTable(
+  "character_quests",
+  {
+    characterId: text("character_id")
+      .notNull()
+      .references(() => characters.id, { onDelete: "cascade" }),
+    questId: text("quest_id").notNull(),
+    status: text("status").notNull().default("available"),
+    progress: integer("progress").notNull().default(0),
+    revision: integer("revision").notNull().default(0),
+    ...timestamps(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.characterId, table.questId] }),
+    check("character_quests_progress_nonnegative", sql`${table.progress} >= 0`),
+    check(
+      "character_quests_status_valid",
+      sql`${table.status} in ('available', 'active', 'ready', 'completed')`,
+    ),
+  ],
+);
+
+export const questObjectiveEvents = pgTable(
+  "quest_objective_events",
+  {
+    characterId: text("character_id")
+      .notNull()
+      .references(() => characters.id, { onDelete: "cascade" }),
+    questId: text("quest_id").notNull(),
+    eventId: text("event_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.characterId, table.questId, table.eventId] }),
+  ],
+);
+
+export const rewardGrants = pgTable(
+  "reward_grants",
+  {
+    grantId: text("grant_id").primaryKey(),
+    characterId: text("character_id")
+      .notNull()
+      .references(() => characters.id, { onDelete: "cascade" }),
+    sourceId: text("source_id").notNull(),
+    defeatSequence: integer("defeat_sequence").notNull(),
+    itemId: text("item_id").notNull(),
+    quantity: integer("quantity").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("reward_grants_character_source_sequence_unique").on(
+      table.characterId,
+      table.sourceId,
+      table.defeatSequence,
+    ),
+    check("reward_grants_quantity_positive", sql`${table.quantity} > 0`),
+  ],
+);
+
+export const durableActionRecords = pgTable("durable_action_records", {
+  actionId: text("action_id").primaryKey(),
+  characterId: text("character_id")
+    .notNull()
+    .references(() => characters.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
+
+export const characterDiscoveries = pgTable(
+  "character_discoveries",
+  {
+    characterId: text("character_id")
+      .notNull()
+      .references(() => characters.id, { onDelete: "cascade" }),
+    discoveryId: text("discovery_id").notNull(),
+    discoveredAt: timestamp("discovered_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.characterId, table.discoveryId] })],
 );
