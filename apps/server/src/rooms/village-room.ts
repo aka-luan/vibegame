@@ -1,12 +1,14 @@
 import { Room, ServerError, type Client } from "@colyseus/core";
 import { MapSchema, Schema, type } from "@colyseus/schema";
 import villageCombat from "@gameish/content/village-combat-server";
+import villageEquipment from "@gameish/content/village-equipment-server";
 import villageCharacter from "@gameish/content/village-character";
 import villageMap from "@gameish/content/village-map-server";
 import villageDialogue from "@gameish/content/village-dialogue-server";
 import villageQuests from "@gameish/content/village-quests-server";
 import type {
   DurableCharacterState,
+  DurableEquipmentSnapshot,
   LocationCheckpointInput,
 } from "@gameish/database";
 import type { CombatCatalog, CombatEffect } from "@gameish/content/combat";
@@ -19,6 +21,8 @@ import {
   type CombatResult,
   type CombatStateMessage,
   type CombatEffectFeedback,
+  type EquipmentResult,
+  type EquipmentStateMessage,
   type MovementIntention,
   type QuestRewardMessage,
   type QuestStateMessage,
@@ -27,6 +31,11 @@ import { moveCharacterFoot, PLAYER_MOVEMENT } from "@gameish/world";
 import { z } from "zod";
 
 import type { PlayTicketConsumer } from "../identity/play-tickets.js";
+import {
+  InMemoryEquipmentPersistence,
+  UnavailableEquipmentPersistence,
+  type EquipmentPersistence,
+} from "../equipment/persistence.js";
 import { MonsterLifecycle } from "../combat/monster-lifecycle.js";
 import { resolveAbility, resolveBasicAttack } from "../combat/resolver.js";
 import {
@@ -103,6 +112,20 @@ const dialogueChoiceSchema = z
 const dialogueCloseSchema = z
   .object({ actionId: z.string().trim().min(1).max(64) })
   .strict();
+const equipmentEquipSchema = z
+  .object({
+    actionId: z.string().trim().min(1).max(64),
+    itemId: z.string().trim().min(1).max(80),
+    expectedCharacterRevision: z.number().int().nonnegative(),
+  })
+  .strict();
+const equipmentUnequipSchema = z
+  .object({
+    actionId: z.string().trim().min(1).max(64),
+    slot: z.literal("body"),
+    expectedCharacterRevision: z.number().int().nonnegative(),
+  })
+  .strict();
 
 const MAX_MOVEMENT_MESSAGE_BYTES = 256;
 const MAX_COMBAT_MESSAGE_BYTES = 256;
@@ -115,6 +138,7 @@ const INTERACTION_RADIUS = 56;
 const INTERACTION_RATE_LIMIT_MS = 250;
 const DIALOGUE_ACTION_RATE_LIMIT_MS = 100;
 const MAX_DIALOGUE_MESSAGE_BYTES = 256;
+const MAX_EQUIPMENT_MESSAGE_BYTES = 256;
 
 class PublicAppearance extends Schema {
   @type("string")
@@ -142,6 +166,9 @@ class PublicPlayer extends Schema {
 
   @type("string")
   animation = "idle";
+
+  @type("number")
+  appearanceRevision = 0;
 
   @type(PublicAppearance)
   appearance = new PublicAppearance();
@@ -200,6 +227,8 @@ export function createVillageRoom(
     rewardRng?: () => number;
     rewardPersistence?: RewardPersistence;
     questPersistence?: QuestPersistence;
+    equipmentPersistence?: EquipmentPersistence;
+    developmentEquipmentEnabled?: boolean;
     checkpointLocation?:
       ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
     recordLifecycle?: (
@@ -225,6 +254,12 @@ export function createVillageRoom(
     readonly #questPersistence =
       options.questPersistence ??
       new InMemoryQuestPersistence("quest:forest_mossbacks");
+    readonly #equipmentPersistence =
+      options.equipmentPersistence ?? new UnavailableEquipmentPersistence();
+    readonly #developmentEquipmentPersistence =
+      new InMemoryEquipmentPersistence();
+    readonly #developmentEquipmentEnabled =
+      options.developmentEquipmentEnabled ?? false;
     readonly #checkpointLocation = options.checkpointLocation;
     readonly #questDefinition = villageQuests.quests.find(
       (quest) => quest.id === "quest:forest_mossbacks",
@@ -239,6 +274,7 @@ export function createVillageRoom(
       DialogueCharacterState
     >();
     readonly #questSnapshots = new Map<string, QuestSnapshot>();
+    readonly #equipmentSnapshots = new Map<string, DurableEquipmentSnapshot>();
     readonly #dialogueSessions = new Map<
       string,
       { npcId: string; nodeId: string }
@@ -512,11 +548,197 @@ export function createVillageRoom(
       this.onMessage(CLIENT_MESSAGES.questStateRequest, (client) => {
         this.#sendQuestState(client);
       });
+      this.onMessage(
+        CLIENT_MESSAGES.equipmentEquip,
+        (client, unsafeIntention: unknown) => {
+          void this.#handleEquipmentEquip(client, unsafeIntention);
+        },
+      );
+      this.onMessage(
+        CLIENT_MESSAGES.equipmentUnequip,
+        (client, unsafeIntention: unknown) => {
+          void this.#handleEquipmentUnequip(client, unsafeIntention);
+        },
+      );
+      this.onMessage(CLIENT_MESSAGES.equipmentStateRequest, (client) => {
+        this.#sendEquipmentState(client);
+      });
 
       this.setSimulationInterval(
         () => this.#simulateFixedStep(),
         PLAYER_MOVEMENT.fixedStepMs,
       );
+    }
+
+    async #handleEquipmentEquip(
+      client: Client,
+      unsafeIntention: unknown,
+    ): Promise<void> {
+      const encodedIntention = JSON.stringify(unsafeIntention);
+      const intention = equipmentEquipSchema.safeParse(unsafeIntention);
+      const snapshot = this.#equipmentSnapshots.get(client.sessionId);
+      if (
+        encodedIntention === undefined ||
+        Buffer.byteLength(encodedIntention) > MAX_EQUIPMENT_MESSAGE_BYTES ||
+        !intention.success ||
+        !snapshot
+      ) {
+        this.#sendEquipmentResult(client, {
+          accepted: false,
+          actionId: intention.success ? intention.data.actionId : "invalid",
+          code: ERROR_CODES.invalidEquipmentIntention,
+        });
+        return;
+      }
+      const definition = villageEquipment.items.find(
+        (item) => item.id === intention.data.itemId,
+      );
+      if (!definition) {
+        this.#sendEquipmentResult(client, {
+          accepted: false,
+          actionId: intention.data.actionId,
+          code: ERROR_CODES.equipmentItemNotFound,
+        });
+        return;
+      }
+      const identity = this.#playerIdentity.get(client.sessionId);
+      if (!identity) return;
+      let result;
+      try {
+        result = await this.#equipmentForCharacter(
+          identity.characterId,
+        ).equipItem({
+          characterId: identity.characterId,
+          item: {
+            itemId: definition.id,
+            slot: definition.slot,
+            rigId: definition.serverOnly.rigId,
+            layerId: definition.serverOnly.layerId,
+          },
+          expectedCharacterRevision: intention.data.expectedCharacterRevision,
+          now: new Date(this.state.serverTimeMs),
+        });
+      } catch {
+        this.#sendEquipmentResult(client, {
+          accepted: false,
+          actionId: intention.data.actionId,
+          code: ERROR_CODES.equipmentPersistenceUnavailable,
+        });
+        return;
+      }
+      this.#applyEquipmentSnapshot(client.sessionId, result.snapshot);
+      if (!result.applied) {
+        this.#sendEquipmentResult(client, {
+          accepted: false,
+          actionId: intention.data.actionId,
+          code: equipmentFailureCode(result.reason),
+          state: this.#equipmentState(result.snapshot),
+        });
+        return;
+      }
+      this.#sendEquipmentResult(client, {
+        accepted: true,
+        actionId: intention.data.actionId,
+        state: this.#equipmentState(result.snapshot),
+      });
+    }
+
+    async #handleEquipmentUnequip(
+      client: Client,
+      unsafeIntention: unknown,
+    ): Promise<void> {
+      const encodedIntention = JSON.stringify(unsafeIntention);
+      const intention = equipmentUnequipSchema.safeParse(unsafeIntention);
+      const snapshot = this.#equipmentSnapshots.get(client.sessionId);
+      if (
+        encodedIntention === undefined ||
+        Buffer.byteLength(encodedIntention) > MAX_EQUIPMENT_MESSAGE_BYTES ||
+        !intention.success ||
+        !snapshot
+      ) {
+        this.#sendEquipmentResult(client, {
+          accepted: false,
+          actionId: intention.success ? intention.data.actionId : "invalid",
+          code: ERROR_CODES.invalidEquipmentIntention,
+        });
+        return;
+      }
+      const identity = this.#playerIdentity.get(client.sessionId);
+      if (!identity) return;
+      let result;
+      try {
+        result = await this.#equipmentForCharacter(
+          identity.characterId,
+        ).unequipItem({
+          characterId: identity.characterId,
+          slot: intention.data.slot,
+          expectedCharacterRevision: intention.data.expectedCharacterRevision,
+          now: new Date(this.state.serverTimeMs),
+        });
+      } catch {
+        this.#sendEquipmentResult(client, {
+          accepted: false,
+          actionId: intention.data.actionId,
+          code: ERROR_CODES.equipmentPersistenceUnavailable,
+        });
+        return;
+      }
+      this.#applyEquipmentSnapshot(client.sessionId, result.snapshot);
+      if (!result.applied) {
+        this.#sendEquipmentResult(client, {
+          accepted: false,
+          actionId: intention.data.actionId,
+          code: equipmentFailureCode(result.reason),
+          state: this.#equipmentState(result.snapshot),
+        });
+        return;
+      }
+      this.#sendEquipmentResult(client, {
+        accepted: true,
+        actionId: intention.data.actionId,
+        state: this.#equipmentState(result.snapshot),
+      });
+    }
+
+    #applyEquipmentSnapshot(
+      sessionId: string,
+      snapshot: DurableEquipmentSnapshot,
+    ): void {
+      this.#equipmentSnapshots.set(sessionId, snapshot);
+      const player = this.state.players.get(sessionId);
+      if (!player) return;
+      player.appearance.assign(snapshot.appearance);
+      player.appearanceRevision = snapshot.characterRevision;
+    }
+
+    #equipmentForCharacter(characterId: string): EquipmentPersistence {
+      return this.#developmentEquipmentEnabled &&
+        characterId.startsWith("development:")
+        ? this.#developmentEquipmentPersistence
+        : this.#equipmentPersistence;
+    }
+
+    #equipmentState(snapshot: DurableEquipmentSnapshot): EquipmentStateMessage {
+      return {
+        characterRevision: snapshot.characterRevision,
+        appearance: { ...snapshot.appearance },
+        inventory: snapshot.inventory.map((item) => ({ ...item })),
+        equipment: snapshot.equipment.map((item) => ({ ...item })),
+      };
+    }
+
+    #sendEquipmentState(client: Client): void {
+      const snapshot = this.#equipmentSnapshots.get(client.sessionId);
+      if (snapshot) {
+        client.send(
+          SERVER_MESSAGES.equipmentState,
+          this.#equipmentState(snapshot),
+        );
+      }
+    }
+
+    #sendEquipmentResult(client: Client, result: EquipmentResult): void {
+      client.send(SERVER_MESSAGES.equipmentResult, result);
     }
 
     #handleInteraction(client: Client, unsafeIntention: unknown): void {
@@ -728,6 +950,14 @@ export function createVillageRoom(
             questId: definition.id,
             ...definition.serverOnly.reward,
           } satisfies QuestRewardMessage);
+          void this.#equipmentForCharacter(identity.characterId)
+            .load(identity.characterId)
+            .then((snapshot) => {
+              if (!this.state.players.has(client.sessionId)) return;
+              this.#applyEquipmentSnapshot(client.sessionId, snapshot);
+              this.#sendEquipmentState(client);
+            })
+            .catch(() => undefined);
         }
         return true;
       } catch {
@@ -1016,6 +1246,20 @@ export function createVillageRoom(
         throw new ServerError(4_225, ERROR_CODES.staleContentVersion);
       }
 
+      let equipment: DurableEquipmentSnapshot;
+      try {
+        equipment = await this.#equipmentForCharacter(
+          consumption.admission.characterId,
+        ).load(
+          consumption.admission.characterId,
+          consumption.admission.appearance,
+        );
+      } catch {
+        throw new ServerError(
+          4_226,
+          ERROR_CODES.equipmentPersistenceUnavailable,
+        );
+      }
       const player = new PublicPlayer();
       player.displayName = consumption.admission.displayName;
       const spawn = villageMap.spawns.find(
@@ -1027,8 +1271,10 @@ export function createVillageRoom(
       );
       player.x = savedPosition?.x ?? spawn.x;
       player.y = savedPosition?.y ?? spawn.y;
-      player.appearance.assign(consumption.admission.appearance);
+      player.appearance.assign(equipment.appearance);
+      player.appearanceRevision = equipment.characterRevision;
       this.state.players.set(client.sessionId, player);
+      this.#equipmentSnapshots.set(client.sessionId, equipment);
       this.#playerIdentity.set(client.sessionId, {
         characterId: consumption.admission.characterId,
         partyId: consumption.admission.partyId,
@@ -1066,6 +1312,7 @@ export function createVillageRoom(
       this.#checkpoint(client.sessionId, "online");
       this.#sendCombatState(client);
       this.#sendQuestState(client);
+      this.#sendEquipmentState(client);
     }
 
     override onLeave(client: Client) {
@@ -1077,6 +1324,7 @@ export function createVillageRoom(
       this.#playerIdentity.delete(client.sessionId);
       this.#characterDialogueState.delete(client.sessionId);
       this.#questSnapshots.delete(client.sessionId);
+      this.#equipmentSnapshots.delete(client.sessionId);
       this.#dialogueSessions.delete(client.sessionId);
       this.#lastInteractionAtMs.delete(client.sessionId);
       this.#lastDialogueActionAtMs.delete(client.sessionId);
@@ -1409,6 +1657,17 @@ export function createVillageRoom(
             const client = this.clients.find(
               (candidate) => candidate.sessionId === sessionId,
             );
+            void this.#equipmentForCharacter(characterId)
+              .load(characterId)
+              .then((snapshot) => {
+                if (!this.state.players.has(sessionId)) return;
+                this.#applyEquipmentSnapshot(sessionId, snapshot);
+                const currentClient = this.clients.find(
+                  (candidate) => candidate.sessionId === sessionId,
+                );
+                if (currentClient) this.#sendEquipmentState(currentClient);
+              })
+              .catch(() => undefined);
             client?.send(SERVER_MESSAGES.rewardSummary, {
               sourceMonsterId,
               items: [{ itemId, quantity: 1 }],
@@ -1518,4 +1777,26 @@ function validSavedPosition(
     return undefined;
   }
   return { x, y };
+}
+
+function equipmentFailureCode(
+  reason:
+    | "stale_revision"
+    | "item_not_owned"
+    | "incompatible_item"
+    | "already_equipped"
+    | "not_equipped",
+): (typeof ERROR_CODES)[keyof typeof ERROR_CODES] {
+  switch (reason) {
+    case "stale_revision":
+      return ERROR_CODES.staleCharacterRevision;
+    case "item_not_owned":
+      return ERROR_CODES.itemNotOwned;
+    case "incompatible_item":
+      return ERROR_CODES.incompatibleEquipment;
+    case "not_equipped":
+      return ERROR_CODES.equipmentNotEquipped;
+    case "already_equipped":
+      return ERROR_CODES.invalidEquipmentIntention;
+  }
 }

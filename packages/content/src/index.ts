@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { combatCatalogSchema } from "./combat.js";
 import { dialogueCatalogSchema } from "./dialogue.js";
+import { equipmentCatalogSchema } from "./equipment.js";
 import { questCatalogSchema } from "./quests.js";
 
 const namespacedId = z
@@ -29,6 +30,7 @@ export const contentSchema = z
     definitions: z.array(contentDefinition),
     combat: combatCatalogSchema.optional(),
     dialogue: dialogueCatalogSchema.optional(),
+    equipment: equipmentCatalogSchema.optional(),
     quests: questCatalogSchema.optional(),
   })
   .superRefine((content, context) => {
@@ -65,6 +67,16 @@ export const contentSchema = z
           });
         }
       });
+    });
+
+    content.equipment?.items.forEach((item, itemIndex) => {
+      if (!identifiers.has(item.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["equipment", "items", itemIndex, "id"],
+          message: `Missing equipment item reference: ${item.id}`,
+        });
+      }
     });
 
     const dialogue = content.dialogue;

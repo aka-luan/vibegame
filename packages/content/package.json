@@ -16,6 +16,10 @@
       "types": "./src/combat.ts",
       "default": "./dist/combat.js"
     },
+    "./character-manifest": {
+      "types": "./src/character-manifest.ts",
+      "default": "./dist/character-manifest.js"
+    },
     "./village-map": {
       "types": "./src/village-map-artifact.d.ts",
       "default": "./dist/artifacts/village-map.js"
@@ -59,6 +63,14 @@
     "./village-dialogue": {
       "types": "./src/village-dialogue-artifact.d.ts",
       "default": "./dist/artifacts/village-dialogue.js"
+    },
+    "./village-equipment": {
+      "types": "./src/village-equipment-artifact.d.ts",
+      "default": "./dist/artifacts/village-equipment.js"
+    },
+    "./village-equipment-server": {
+      "types": "./src/village-equipment-server-artifact.d.ts",
+      "default": "./dist/artifacts/village-equipment-server.js"
     }
   },
   "scripts": {

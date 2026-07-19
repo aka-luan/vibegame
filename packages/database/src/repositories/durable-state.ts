@@ -5,7 +5,9 @@ import type { NodePgTransaction } from "drizzle-orm/node-postgres";
 import type { GameDatabase } from "../index.js";
 import type * as schema from "../schema.js";
 import {
+  characterAppearance,
   characterDiscoveries,
+  characterEquipment,
   characterInventory,
   characterLocations,
   characterProgression,
@@ -66,6 +68,39 @@ export interface DurableRewardGrant {
   quantity: number;
 }
 
+export type DurableEquipmentSlot = "body";
+
+export interface DurableEquipmentItem {
+  itemId: string;
+  slot: DurableEquipmentSlot;
+  rigId: string;
+  layerId: string;
+}
+
+export interface DurableEquipmentSnapshot {
+  characterRevision: number;
+  appearance: {
+    rigId: string;
+    baseLayerId: string;
+    armorLayerId: string;
+  };
+  inventory: { itemId: string; quantity: number }[];
+  equipment: { slot: DurableEquipmentSlot; itemId: string }[];
+}
+
+export type DurableEquipmentMutationResult =
+  | { applied: true; snapshot: DurableEquipmentSnapshot }
+  | {
+      applied: false;
+      reason:
+        | "stale_revision"
+        | "item_not_owned"
+        | "incompatible_item"
+        | "already_equipped"
+        | "not_equipped";
+      snapshot: DurableEquipmentSnapshot;
+    };
+
 export interface DurableCharacterState {
   characterRevision: number;
   progression: {
@@ -75,6 +110,8 @@ export interface DurableCharacterState {
     revision: number;
   };
   inventory: { itemId: string; quantity: number }[];
+  appearance: DurableEquipmentSnapshot["appearance"];
+  equipment: DurableEquipmentSnapshot["equipment"];
   discoveries: string[];
   location: {
     logicalMapId: string;
@@ -129,7 +166,16 @@ export class DurableStateRepository {
       .from(characterLocations)
       .where(eq(characterLocations.characterId, characterId))
       .limit(1);
-    if (!character || !progression || !location) {
+    const [appearance] = await this.db
+      .select({
+        rigId: characterAppearance.rigId,
+        baseLayerId: characterAppearance.baseLayerId,
+        armorLayerId: characterAppearance.armorLayerId,
+      })
+      .from(characterAppearance)
+      .where(eq(characterAppearance.characterId, characterId))
+      .limit(1);
+    if (!character || !progression || !location || !appearance) {
       throw new Error("Durable character state is incomplete");
     }
     const inventory = await this.db
@@ -143,11 +189,23 @@ export class DurableStateRepository {
       .select({ discoveryId: characterDiscoveries.discoveryId })
       .from(characterDiscoveries)
       .where(eq(characterDiscoveries.characterId, characterId));
+    const equipment = await this.db
+      .select({
+        slot: characterEquipment.slot,
+        itemId: characterEquipment.itemId,
+      })
+      .from(characterEquipment)
+      .where(eq(characterEquipment.characterId, characterId));
 
     return {
       characterRevision: character.revision,
       progression,
       inventory,
+      appearance,
+      equipment: equipment.map((item) => ({
+        slot: parseEquipmentSlot(item.slot),
+        itemId: item.itemId,
+      })),
       discoveries: discoveries.map((discovery) => discovery.discoveryId),
       location: {
         logicalMapId: location.logicalMapId,
@@ -157,6 +215,121 @@ export class DurableStateRepository {
         connectionState: parseConnectionState(location.connectionState),
       },
     };
+  }
+
+  async loadEquipment(characterId: string): Promise<DurableEquipmentSnapshot> {
+    const state = await this.loadCharacterState(characterId);
+    return {
+      characterRevision: state.characterRevision,
+      appearance: state.appearance,
+      inventory: state.inventory,
+      equipment: state.equipment,
+    };
+  }
+
+  async equipItem(input: {
+    characterId: string;
+    item: DurableEquipmentItem;
+    expectedCharacterRevision: number;
+    now: Date;
+  }): Promise<DurableEquipmentMutationResult> {
+    return this.db.transaction(async (tx) => {
+      const current = await this.#lockedEquipmentSnapshot(
+        tx,
+        input.characterId,
+      );
+      if (current.characterRevision !== input.expectedCharacterRevision) {
+        return equipmentRejected(current, "stale_revision");
+      }
+      const owned = current.inventory.find(
+        (entry) => entry.itemId === input.item.itemId,
+      );
+      if (!owned || owned.quantity <= 0) {
+        return equipmentRejected(current, "item_not_owned");
+      }
+      if (
+        input.item.rigId !== current.appearance.rigId ||
+        input.item.slot !== "body"
+      ) {
+        return equipmentRejected(current, "incompatible_item");
+      }
+      const existing = current.equipment.find(
+        (entry) => entry.slot === input.item.slot,
+      );
+      if (existing?.itemId === input.item.itemId) {
+        return equipmentRejected(current, "already_equipped");
+      }
+      await tx
+        .insert(characterEquipment)
+        .values({
+          characterId: input.characterId,
+          slot: input.item.slot,
+          itemId: input.item.itemId,
+          createdAt: input.now,
+          updatedAt: input.now,
+        })
+        .onConflictDoUpdate({
+          target: [characterEquipment.characterId, characterEquipment.slot],
+          set: { itemId: input.item.itemId, updatedAt: input.now },
+        });
+      await tx
+        .update(characterAppearance)
+        .set({ armorLayerId: input.item.layerId, updatedAt: input.now })
+        .where(eq(characterAppearance.characterId, input.characterId));
+      await this.#bumpCharacterRevision(
+        tx,
+        input.characterId,
+        input.now,
+        input.expectedCharacterRevision,
+      );
+      return {
+        applied: true,
+        snapshot: await this.#lockedEquipmentSnapshot(tx, input.characterId),
+      };
+    });
+  }
+
+  async unequipItem(input: {
+    characterId: string;
+    slot: DurableEquipmentSlot;
+    expectedCharacterRevision: number;
+    now: Date;
+  }): Promise<DurableEquipmentMutationResult> {
+    return this.db.transaction(async (tx) => {
+      const current = await this.#lockedEquipmentSnapshot(
+        tx,
+        input.characterId,
+      );
+      if (current.characterRevision !== input.expectedCharacterRevision) {
+        return equipmentRejected(current, "stale_revision");
+      }
+      const existing = current.equipment.find(
+        (entry) => entry.slot === input.slot,
+      );
+      if (!existing) return equipmentRejected(current, "not_equipped");
+      await tx
+        .delete(characterEquipment)
+        .where(
+          and(
+            eq(characterEquipment.characterId, input.characterId),
+            eq(characterEquipment.slot, input.slot),
+          ),
+        );
+      await tx
+        .update(characterAppearance)
+        .set({ armorLayerId: "", updatedAt: input.now })
+        .where(eq(characterAppearance.characterId, input.characterId));
+      await this.#bumpCharacterRevision(
+        tx,
+        input.characterId,
+        input.now,
+        input.expectedCharacterRevision,
+      );
+      return {
+        applied: true,
+        snapshot: await this.#lockedEquipmentSnapshot(tx, input.characterId),
+      };
+    });
   }
 
   async loadQuest(
@@ -389,6 +562,53 @@ export class DurableStateRepository {
     return updated.length > 0;
   }
 
+  async #lockedEquipmentSnapshot(
+    tx: GameTransaction,
+    characterId: string,
+  ): Promise<DurableEquipmentSnapshot> {
+    const [character] = await tx
+      .select({ revision: characters.revision })
+      .from(characters)
+      .where(eq(characters.id, characterId))
+      .for("update")
+      .limit(1);
+    const [appearance] = await tx
+      .select({
+        rigId: characterAppearance.rigId,
+        baseLayerId: characterAppearance.baseLayerId,
+        armorLayerId: characterAppearance.armorLayerId,
+      })
+      .from(characterAppearance)
+      .where(eq(characterAppearance.characterId, characterId))
+      .limit(1);
+    if (!character || !appearance) {
+      throw new Error("Character equipment state is incomplete");
+    }
+    const inventory = await tx
+      .select({
+        itemId: characterInventory.itemId,
+        quantity: characterInventory.quantity,
+      })
+      .from(characterInventory)
+      .where(eq(characterInventory.characterId, characterId));
+    const equipment = await tx
+      .select({
+        slot: characterEquipment.slot,
+        itemId: characterEquipment.itemId,
+      })
+      .from(characterEquipment)
+      .where(eq(characterEquipment.characterId, characterId));
+    return {
+      characterRevision: character.revision,
+      appearance,
+      inventory,
+      equipment: equipment.map((item) => ({
+        slot: parseEquipmentSlot(item.slot),
+        itemId: item.itemId,
+      })),
+    };
+  }
+
   async #lockedQuest(
     tx: GameTransaction,
     characterId: string,
@@ -514,14 +734,24 @@ export class DurableStateRepository {
     tx: GameTransaction,
     characterId: string,
     now: Date,
+    expectedRevision?: number,
   ): Promise<void> {
-    await tx
+    const updated = await tx
       .update(characters)
       .set({
         revision: sql`${characters.revision} + 1`,
         updatedAt: now,
       })
-      .where(eq(characters.id, characterId));
+      .where(
+        expectedRevision === undefined
+          ? eq(characters.id, characterId)
+          : and(
+              eq(characters.id, characterId),
+              eq(characters.revision, expectedRevision),
+            ),
+      )
+      .returning({ id: characters.id });
+    if (updated.length === 0) throw new Error("Character revision is stale");
   }
 }
 
@@ -579,4 +809,16 @@ function parseConnectionState(
     return state;
   }
   throw new Error(`Invalid durable connection state: ${state}`);
+}
+
+function parseEquipmentSlot(state: string): DurableEquipmentSlot {
+  if (state === "body") return state;
+  throw new Error(`Invalid durable equipment slot: ${state}`);
+}
+
+function equipmentRejected(
+  snapshot: DurableEquipmentSnapshot,
+  reason: Extract<DurableEquipmentMutationResult, { applied: false }>["reason"],
+): DurableEquipmentMutationResult {
+  return { applied: false, reason, snapshot };
 }

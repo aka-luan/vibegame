@@ -68,6 +68,22 @@
       }
     }
   ],
+  "equipment": {
+    "schemaVersion": 1,
+    "items": [
+      {
+        "id": "item:trailwarden_tunic",
+        "slot": "body",
+        "clientVisible": {
+          "displayName": "Trailwarden Tunic"
+        },
+        "serverOnly": {
+          "rigId": "rig:village_placeholder",
+          "layerId": "tunic"
+        }
+      }
+    ]
+  },
   "combat": {
     "schemaVersion": 1,
     "classes": [

@@ -390,6 +390,11 @@ class VillageScene extends Phaser.Scene {
           this.cameras.main.startFollow(character.display, true, 0.18, 0.18);
         }
       }
+      character.applyAppearance(
+        player.entityId === snapshot.localEntityId && snapshot.previewAppearance
+          ? snapshot.previewAppearance
+          : player.appearance,
+      );
       character.applyFacing(player.facing);
       character.play(player.animation);
       if (player.entityId === snapshot.localEntityId) {
@@ -429,6 +434,13 @@ class VillageScene extends Phaser.Scene {
     this.game.canvas.dataset.publicPlayerCount = String(this.#characters.size);
     this.game.canvas.dataset.publicPlayerNames = JSON.stringify(
       snapshot.players.map((player) => player.displayName).sort(),
+    );
+    this.game.canvas.dataset.publicPlayerArmors = JSON.stringify(
+      snapshot.players.map((player) => ({
+        displayName: player.displayName,
+        armorLayerId: player.appearance.armorLayerId,
+        appearanceRevision: player.appearanceRevision,
+      })),
     );
     const local = snapshot.players.find(
       (player) => player.entityId === snapshot.localEntityId,
