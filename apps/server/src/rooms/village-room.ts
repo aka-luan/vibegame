@@ -229,6 +229,7 @@ export function createVillageRoom(
     questPersistence?: QuestPersistence;
     equipmentPersistence?: EquipmentPersistence;
     developmentEquipmentEnabled?: boolean;
+    developmentQuestEnabled?: boolean;
     logEquipmentPersistenceFailure?: (details: {
       operation: string;
       characterId: string;
@@ -259,6 +260,11 @@ export function createVillageRoom(
     readonly #questPersistence =
       options.questPersistence ??
       new InMemoryQuestPersistence("quest:forest_mossbacks");
+    readonly #developmentQuestPersistence = new InMemoryQuestPersistence(
+      "quest:forest_mossbacks",
+    );
+    readonly #developmentQuestEnabled =
+      options.developmentQuestEnabled ?? false;
     readonly #equipmentPersistence =
       options.equipmentPersistence ?? new UnavailableEquipmentPersistence();
     readonly #developmentEquipmentPersistence =
@@ -736,6 +742,13 @@ export function createVillageRoom(
         : this.#equipmentPersistence;
     }
 
+    #questsForCharacter(characterId: string): QuestPersistence {
+      return this.#developmentQuestEnabled &&
+        characterId.startsWith("development:")
+        ? this.#developmentQuestPersistence
+        : this.#questPersistence;
+    }
+
     #equipmentState(snapshot: DurableEquipmentSnapshot): EquipmentStateMessage {
       return {
         characterRevision: snapshot.characterRevision,
@@ -950,7 +963,9 @@ export function createVillageRoom(
           ? definition.serverOnly.reward
           : undefined;
       try {
-        const result = await this.#questPersistence.transitionQuest({
+        const result = await this.#questsForCharacter(
+          identity.characterId,
+        ).transitionQuest({
           characterId: identity.characterId,
           questId: definition.id,
           objective: definition.serverOnly.objective,
@@ -1017,7 +1032,9 @@ export function createVillageRoom(
       const current = this.#questSnapshots.get(sessionId);
       if (!current || current.status !== "active") return;
       try {
-        const result = await this.#questPersistence.transitionQuest({
+        const result = await this.#questsForCharacter(
+          characterId,
+        ).transitionQuest({
           characterId,
           questId: definition.id,
           objective: definition.serverOnly.objective,
@@ -1319,7 +1336,9 @@ export function createVillageRoom(
         characterId: consumption.admission.characterId,
         partyId: consumption.admission.partyId,
       });
-      const questSnapshot = await this.#questPersistence.loadQuest(
+      const questSnapshot = await this.#questsForCharacter(
+        consumption.admission.characterId,
+      ).loadQuest(
         consumption.admission.characterId,
         this.#questDefinition?.id ?? "quest:forest_mossbacks",
       );

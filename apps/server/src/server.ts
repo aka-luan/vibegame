@@ -156,6 +156,7 @@ export async function startFoundationServer(
                 options.logEquipmentPersistenceFailure,
             }),
         developmentEquipmentEnabled: options.developmentLoginEnabled === true,
+        developmentQuestEnabled: options.developmentLoginEnabled === true,
         ...(options.checkpointLocation === undefined
           ? {}
           : { checkpointLocation: options.checkpointLocation }),
