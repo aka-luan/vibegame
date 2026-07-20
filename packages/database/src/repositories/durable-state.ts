@@ -36,6 +36,12 @@ export interface DurableQuestSnapshot {
 }
 
 export interface DurableQuestObjective {
+  /**
+   * Opaque caller-defined objective discriminator (e.g. "kill"). The
+   * database never interprets this value; it is passed through untouched
+   * to the caller-supplied `QuestTransitionDecider`.
+   */
+  kind: string;
   targetId: string;
   requiredCount: number;
 }
@@ -50,7 +56,7 @@ export interface DurableQuestReward {
 export type DurableQuestTransition =
   | { kind: "accept" }
   | { kind: "objective"; eventId: string; targetId: string }
-  | { kind: "complete" };
+  | { kind: "complete"; completionId: string };
 
 export type DurableQuestTransitionResult =
   | { applied: true; snapshot: DurableQuestSnapshot }
@@ -59,6 +65,12 @@ export type DurableQuestTransitionResult =
       reason: "already_applied" | "illegal_transition" | "objective_mismatch";
       snapshot: DurableQuestSnapshot;
     };
+
+export type QuestTransitionDecider = (
+  snapshot: DurableQuestSnapshot,
+  context: { objective: DurableQuestObjective },
+  transition: DurableQuestTransition,
+) => DurableQuestTransitionResult;
 
 export interface DurableRewardGrant {
   grantId: string;
@@ -391,7 +403,7 @@ export class DurableStateRepository {
     objective: DurableQuestObjective;
     transition: DurableQuestTransition;
     reward?: DurableQuestReward;
-    completionId?: string;
+    decide: QuestTransitionDecider;
     now: Date;
   }): Promise<DurableQuestTransitionResult> {
     return this.db.transaction(async (tx) => {
@@ -415,40 +427,38 @@ export class DurableStateRepository {
       if (!quest) throw new Error("Quest state is unavailable");
       const current = await this.#snapshot(input.characterId, quest, tx);
 
+      if (input.transition.kind === "complete") {
+        const [existingAction] = await tx
+          .select({ actionId: durableActionRecords.actionId })
+          .from(durableActionRecords)
+          .where(
+            and(
+              eq(durableActionRecords.actionId, input.transition.completionId),
+              eq(durableActionRecords.characterId, input.characterId),
+            ),
+          )
+          .limit(1);
+        if (existingAction) return rejected(current, "already_applied");
+      }
+
+      const result = input.decide(
+        current,
+        { objective: input.objective },
+        input.transition,
+      );
+      if (!result.applied) return result;
+
       if (input.transition.kind === "accept") {
-        if (current.status !== "available") {
-          return rejected(current, "illegal_transition");
-        }
-        const next = applied(current, { status: "active" });
-        await this.#updateQuest(tx, input, next.snapshot);
+        await this.#updateQuest(tx, input, result.snapshot);
         await this.#bumpCharacterRevision(tx, input.characterId, input.now);
-        return next;
+        return result;
       }
 
       if (input.transition.kind === "complete") {
-        if (input.completionId) {
-          const [existingAction] = await tx
-            .select({ actionId: durableActionRecords.actionId })
-            .from(durableActionRecords)
-            .where(
-              and(
-                eq(durableActionRecords.actionId, input.completionId),
-                eq(durableActionRecords.characterId, input.characterId),
-              ),
-            )
-            .limit(1);
-          if (existingAction) return rejected(current, "already_applied");
-        }
-        if (current.status !== "ready") {
-          return rejected(current, "illegal_transition");
-        }
-        if (!input.completionId) {
-          return rejected(current, "illegal_transition");
-        }
         const action = await tx
           .insert(durableActionRecords)
           .values({
-            actionId: input.completionId,
+            actionId: input.transition.completionId,
             characterId: input.characterId,
             kind: "quest_completion",
             createdAt: input.now,
@@ -456,8 +466,7 @@ export class DurableStateRepository {
           .onConflictDoNothing()
           .returning({ actionId: durableActionRecords.actionId });
         if (action.length === 0) return rejected(current, "already_applied");
-        const next = applied(current, { status: "completed" });
-        await this.#updateQuest(tx, input, next.snapshot);
+        await this.#updateQuest(tx, input, result.snapshot);
         if (input.reward) {
           await this.#applyReward(
             tx,
@@ -467,27 +476,9 @@ export class DurableStateRepository {
           );
         }
         await this.#bumpCharacterRevision(tx, input.characterId, input.now);
-        return next;
+        return result;
       }
 
-      const [existingEvent] = await tx
-        .select({ eventId: questObjectiveEvents.eventId })
-        .from(questObjectiveEvents)
-        .where(
-          and(
-            eq(questObjectiveEvents.characterId, input.characterId),
-            eq(questObjectiveEvents.questId, input.questId),
-            eq(questObjectiveEvents.eventId, input.transition.eventId),
-          ),
-        )
-        .limit(1);
-      if (existingEvent) return rejected(current, "already_applied");
-      if (current.status !== "active") {
-        return rejected(current, "illegal_transition");
-      }
-      if (input.transition.targetId !== input.objective.targetId) {
-        return rejected(current, "objective_mismatch");
-      }
       const event = await tx
         .insert(questObjectiveEvents)
         .values({
@@ -499,18 +490,9 @@ export class DurableStateRepository {
         .onConflictDoNothing()
         .returning({ eventId: questObjectiveEvents.eventId });
       if (event.length === 0) return rejected(current, "already_applied");
-      const progress = Math.min(
-        input.objective.requiredCount,
-        current.progress + 1,
-      );
-      const next = applied(current, {
-        progress,
-        status: progress >= input.objective.requiredCount ? "ready" : "active",
-        appliedEventIds: [...current.appliedEventIds, input.transition.eventId],
-      });
-      await this.#updateQuest(tx, input, next.snapshot);
+      await this.#updateQuest(tx, input, result.snapshot);
       await this.#bumpCharacterRevision(tx, input.characterId, input.now);
-      return next;
+      return result;
     });
   }
 
@@ -822,20 +804,6 @@ function availableQuest(questId: string): DurableQuestSnapshot {
     progress: 0,
     appliedEventIds: [],
     revision: 0,
-  };
-}
-
-function applied(
-  snapshot: DurableQuestSnapshot,
-  changes: Partial<DurableQuestSnapshot>,
-): DurableQuestTransitionResult {
-  return {
-    applied: true,
-    snapshot: {
-      ...snapshot,
-      ...changes,
-      revision: snapshot.revision + 1,
-    },
   };
 }
 

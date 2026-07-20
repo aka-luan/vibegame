@@ -949,10 +949,6 @@ export function createVillageRoom(
         action.kind === "complete_quest"
           ? definition.serverOnly.reward
           : undefined;
-      const completionId =
-        action.kind === "complete_quest"
-          ? `quest-completion:${identity.characterId}:${definition.id}`
-          : undefined;
       try {
         const result = await this.#questPersistence.transitionQuest({
           characterId: identity.characterId,
@@ -961,9 +957,11 @@ export function createVillageRoom(
           transition:
             action.kind === "accept_quest"
               ? { kind: "accept" }
-              : { kind: "complete" },
+              : {
+                  kind: "complete",
+                  completionId: `quest-completion:${identity.characterId}:${definition.id}`,
+                },
           ...(reward === undefined ? {} : { reward }),
-          ...(completionId === undefined ? {} : { completionId }),
         });
         if (!result.applied) {
           this.#sendQuestRejected(

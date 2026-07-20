@@ -21,7 +21,6 @@ export interface QuestPersistence {
     objective: QuestObjective;
     transition: QuestTransition;
     reward?: QuestReward;
-    completionId?: string;
   }): Promise<QuestTransitionResult>;
 }
 
@@ -42,14 +41,12 @@ export class InMemoryQuestPersistence implements QuestPersistence {
     objective: QuestObjective;
     transition: QuestTransition;
     reward?: QuestReward;
-    completionId?: string;
   }): Promise<QuestTransitionResult> {
     return Promise.resolve().then(() => {
       const current = this.#get(input.characterId, input.questId);
       if (
         input.transition.kind === "complete" &&
-        input.completionId !== undefined &&
-        this.#completionIds.has(input.completionId)
+        this.#completionIds.has(input.transition.completionId)
       ) {
         return { applied: false, reason: "already_applied", snapshot: current };
       }
@@ -61,10 +58,12 @@ export class InMemoryQuestPersistence implements QuestPersistence {
         ...result.snapshot,
         appliedEventIds: [...result.snapshot.appliedEventIds],
       });
-      if (input.transition.kind === "complete" && input.completionId) {
-        this.#completionIds.add(input.completionId);
+      if (input.transition.kind === "complete") {
+        this.#completionIds.add(input.transition.completionId);
         if (input.reward)
-          this.#rewards.set(input.completionId, { ...input.reward });
+          this.#rewards.set(input.transition.completionId, {
+            ...input.reward,
+          });
       }
       return result;
     });

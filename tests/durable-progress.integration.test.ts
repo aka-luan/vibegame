@@ -9,17 +9,30 @@ import {
   migrateDatabase,
 } from "@gameish/database";
 
+import { PostgresQuestPersistence } from "../apps/server/src/persistence/durable-state.js";
+import {
+  CONTRACT_REWARD_ITEM_ID,
+  runQuestPersistenceContract,
+} from "../apps/server/src/quests/persistence-contract.js";
+
 const databaseUrl =
   process.env.TEST_DATABASE_URL ??
   "postgres://gameish:gameish@localhost:5432/gameish";
 let database = connectDatabase(databaseUrl);
 let accountRepository = new GuestAccountRepository(database.db);
 let durableState = new DurableStateRepository(database.db);
+const questPersistence = new PostgresQuestPersistence(durableState, () =>
+  now.getTime(),
+);
 const userId = `user:durable-progress-${randomUUID()}`;
 const characterId = `character:durable-progress-${randomUUID()}`;
 const now = new Date("2026-07-19T12:00:00.000Z");
 const questId = "quest:forest_mossbacks";
-const objective = { targetId: "monster:mossback", requiredCount: 1 };
+const objective = {
+  kind: "kill" as const,
+  targetId: "monster:mossback",
+  requiredCount: 1,
+};
 
 beforeAll(async () => {
   await migrateDatabase(
@@ -61,18 +74,19 @@ beforeAll(async () => {
 
 describe("durable progress persistence", () => {
   it("applies quest progress and completion atomically with replay protection", async () => {
-    await expect(
-      durableState.transitionQuest({
-        characterId,
-        questId,
-        objective,
-        transition: { kind: "accept" },
-        now,
-      }),
-    ).resolves.toMatchObject({ applied: true, snapshot: { status: "active" } });
+    // Locking/concurrency and reward-application details are SQL-specific;
+    // the illegal-transition/objective-mismatch/revision rules themselves
+    // are covered once for every QuestPersistence adapter by the shared
+    // contract below.
+    await questPersistence.transitionQuest({
+      characterId,
+      questId,
+      objective,
+      transition: { kind: "accept" },
+    });
 
     const progressResults = await Promise.all([
-      durableState.transitionQuest({
+      questPersistence.transitionQuest({
         characterId,
         questId,
         objective,
@@ -81,9 +95,8 @@ describe("durable progress persistence", () => {
           eventId: "defeat:durable:1",
           targetId: objective.targetId,
         },
-        now,
       }),
-      durableState.transitionQuest({
+      questPersistence.transitionQuest({
         characterId,
         questId,
         objective,
@@ -92,7 +105,6 @@ describe("durable progress persistence", () => {
           eventId: "defeat:durable:1",
           targetId: objective.targetId,
         },
-        now,
       }),
     ]);
     expect(progressResults.filter((result) => result.applied)).toHaveLength(1);
@@ -106,19 +118,20 @@ describe("durable progress persistence", () => {
       characterId,
       questId,
       objective,
-      completionId: `quest-completion:${characterId}:${questId}`,
       reward: {
         itemId: "item:mossback_scale",
         quantity: 1,
         experience: 100,
         currency: 10,
       },
-      transition: { kind: "complete" as const },
-      now,
+      transition: {
+        kind: "complete" as const,
+        completionId: `quest-completion:${characterId}:${questId}`,
+      },
     };
     const completionResults = await Promise.all([
-      durableState.transitionQuest(completionInput),
-      durableState.transitionQuest(completionInput),
+      questPersistence.transitionQuest(completionInput),
+      questPersistence.transitionQuest(completionInput),
     ]);
     expect(completionResults.filter((result) => result.applied)).toHaveLength(
       1,
@@ -175,14 +188,13 @@ describe("durable progress persistence", () => {
       logicalMapId: "map:village",
       entranceId: "village_square",
     });
-    await durableState.transitionQuest({
+    await questPersistence.transitionQuest({
       characterId: otherCharacterId,
       questId,
       objective,
       transition: { kind: "accept" },
-      now,
     });
-    await durableState.transitionQuest({
+    await questPersistence.transitionQuest({
       characterId: otherCharacterId,
       questId,
       objective,
@@ -191,18 +203,18 @@ describe("durable progress persistence", () => {
         eventId: "defeat:rollback:1",
         targetId: objective.targetId,
       },
-      now,
     });
     const completion = {
       characterId: otherCharacterId,
       questId,
       objective,
-      completionId: `quest-completion:${otherCharacterId}:${questId}`,
-      transition: { kind: "complete" as const },
-      now,
+      transition: {
+        kind: "complete" as const,
+        completionId: `quest-completion:${otherCharacterId}:${questId}`,
+      },
     };
     await expect(
-      durableState.transitionQuest({
+      questPersistence.transitionQuest({
         ...completion,
         reward: {
           itemId: "item:invalid_reward",
@@ -213,7 +225,7 @@ describe("durable progress persistence", () => {
       }),
     ).rejects.toThrow();
     await expect(
-      durableState.transitionQuest({
+      questPersistence.transitionQuest({
         ...completion,
         reward: {
           itemId: "item:mossback_scale",
@@ -291,6 +303,46 @@ describe("durable progress persistence", () => {
     ).rejects.toThrow();
     await unavailable.close();
   });
+});
+
+runQuestPersistenceContract("postgres", async () => {
+  const contractCharacterId = `character:quest-persistence-contract-${randomUUID()}`;
+  await accountRepository.createCharacter({
+    id: contractCharacterId,
+    userId,
+    name: `Quest Contract ${randomUUID().slice(0, 8)}`,
+    normalizedName: `quest contract ${randomUUID()}`,
+    creationRequestId: `create:${contractCharacterId}`,
+    now,
+    contentVersion: "content:village_m1_v1",
+    classId: "class:trailwarden",
+    basicAttackId: "attack:trailward_strike",
+    abilityIds: [
+      "ability:thorn_arc",
+      "ability:binding_briar",
+      "ability:warding_breath",
+      "ability:disrupting_roar",
+    ],
+    starterEquipmentItemId: "item:trailwarden_tunic",
+    rigId: "rig:village_placeholder",
+    baseLayerId: "base",
+    armorLayerId: "tunic",
+    logicalMapId: "map:village",
+    entranceId: "village_square",
+  });
+  return {
+    persistence: new PostgresQuestPersistence(durableState, () =>
+      now.getTime(),
+    ),
+    characterId: contractCharacterId,
+    countRewards: async () => {
+      const state = await durableState.loadCharacterState(contractCharacterId);
+      return (
+        state.inventory.find((item) => item.itemId === CONTRACT_REWARD_ITEM_ID)
+          ?.quantity ?? 0
+      );
+    },
+  };
 });
 
 afterAll(async () => {

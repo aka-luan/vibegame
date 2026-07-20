@@ -4,10 +4,11 @@ import type {
 } from "@gameish/database";
 
 import type { QuestPersistence, QuestReward } from "../quests/persistence.js";
-import type {
-  QuestObjective,
-  QuestSnapshot,
-  QuestTransition,
+import {
+  transitionQuest,
+  type QuestObjective,
+  type QuestSnapshot,
+  type QuestTransition,
 } from "../quests/state.js";
 import {
   DuplicateRewardGrantError,
@@ -34,14 +35,15 @@ export class PostgresQuestPersistence implements QuestPersistence {
     objective: QuestObjective;
     transition: QuestTransition;
     reward?: QuestReward;
-    completionId?: string;
   }) {
     return this.repository.transitionQuest({
       ...input,
       objective: {
+        kind: input.objective.kind,
         targetId: input.objective.targetId,
         requiredCount: input.objective.requiredCount,
       },
+      decide: transitionQuest,
       now: new Date(this.now()),
     });
   }

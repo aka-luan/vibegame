@@ -15,13 +15,13 @@ export interface QuestObjective {
 }
 
 export interface QuestTransitionContext {
-  objective: QuestObjective;
+  objective: { kind: string; targetId: string; requiredCount: number };
 }
 
 export type QuestTransition =
   | { kind: "accept" }
   | { kind: "objective"; eventId: string; targetId: string }
-  | { kind: "complete" };
+  | { kind: "complete"; completionId: string };
 
 export type QuestTransitionResult =
   | { applied: true; snapshot: QuestSnapshot }
