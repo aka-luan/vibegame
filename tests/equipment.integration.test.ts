@@ -7,6 +7,7 @@ import {
   DurableStateRepository,
   GuestAccountRepository,
   migrateDatabase,
+  sql,
 } from "@gameish/database";
 
 const databaseUrl =
@@ -74,6 +75,7 @@ describe("durable equipment mutations", () => {
           slot: "body",
           rigId: "rig:village_placeholder",
           layerId: "tunic",
+          requirements: { minimumLevel: 1, classId: "class:trailwarden" },
         },
         expectedCharacterRevision: initial.characterRevision,
         now,
@@ -99,6 +101,7 @@ describe("durable equipment mutations", () => {
         slot: "body",
         rigId: "rig:village_placeholder",
         layerId: "tunic",
+        requirements: { minimumLevel: 1, classId: "class:trailwarden" },
       },
       expectedCharacterRevision: afterReward.characterRevision,
       now,
@@ -161,6 +164,7 @@ describe("durable equipment mutations", () => {
         slot: "body",
         rigId: "rig:other",
         layerId: "tunic",
+        requirements: { minimumLevel: 1, classId: "class:trailwarden" },
       },
       expectedCharacterRevision: before.characterRevision,
       now,
@@ -174,6 +178,91 @@ describe("durable equipment mutations", () => {
       appearance: before.appearance,
       equipment: before.equipment,
     });
+  });
+
+  it("rejects an owned item when its level or class requirements are not met", async () => {
+    await durableState.grantReward(
+      {
+        grantId: `grant:${characterId}:requirements`,
+        characterId,
+        sourceId: "monster:test",
+        defeatSequence: 3,
+        itemId: "item:level_locked_armor",
+        quantity: 1,
+      },
+      now,
+    );
+    const before = await durableState.loadEquipment(characterId);
+    await expect(
+      durableState.equipItem({
+        characterId,
+        item: {
+          itemId: "item:level_locked_armor",
+          slot: "body",
+          rigId: "rig:village_placeholder",
+          layerId: "tunic",
+          requirements: { minimumLevel: 99 },
+        },
+        expectedCharacterRevision: before.characterRevision,
+        now,
+      }),
+    ).resolves.toMatchObject({
+      applied: false,
+      reason: "requirements_not_met",
+      snapshot: { characterRevision: before.characterRevision },
+    });
+    await expect(
+      durableState.loadEquipment(characterId),
+    ).resolves.toMatchObject({
+      characterRevision: before.characterRevision,
+      appearance: before.appearance,
+      equipment: before.equipment,
+    });
+  });
+
+  it("rolls back equipment and appearance when the appearance write fails", async () => {
+    const before = await durableState.loadEquipment(characterId);
+    await database.db.execute(
+      sql.raw(
+        "CREATE FUNCTION gameish_test_fail_equipment_appearance() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced equipment failure'; END; $$",
+      ),
+    );
+    await database.db.execute(
+      sql.raw(
+        "CREATE TRIGGER gameish_test_fail_equipment_appearance BEFORE UPDATE ON character_appearance FOR EACH ROW EXECUTE FUNCTION gameish_test_fail_equipment_appearance()",
+      ),
+    );
+    try {
+      await expect(
+        durableState.equipItem({
+          characterId,
+          item: {
+            itemId: "item:trailwarden_tunic",
+            slot: "body",
+            rigId: "rig:village_placeholder",
+            layerId: "tunic",
+            requirements: {
+              minimumLevel: 1,
+              classId: "class:trailwarden",
+            },
+          },
+          expectedCharacterRevision: before.characterRevision,
+          now,
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await database.db.execute(
+        sql.raw(
+          "DROP TRIGGER gameish_test_fail_equipment_appearance ON character_appearance",
+        ),
+      );
+      await database.db.execute(
+        sql.raw("DROP FUNCTION gameish_test_fail_equipment_appearance()"),
+      );
+    }
+    await expect(durableState.loadEquipment(characterId)).resolves.toEqual(
+      before,
+    );
   });
 });
 

@@ -191,6 +191,18 @@ describe("village public presence", () => {
     });
 
     const initialRevision = privateState?.characterRevision ?? 0;
+    player.send(CLIENT_MESSAGES.equipmentEquip, {
+      actionId: "equipment-equip-already-equipped",
+      itemId: "item:trailwarden_tunic",
+      expectedCharacterRevision: initialRevision,
+    });
+    await waitUntil(() => {
+      expect(latestResult).toMatchObject({
+        accepted: false,
+        actionId: "equipment-equip-already-equipped",
+        code: ERROR_CODES.equipmentAlreadyEquipped,
+      });
+    });
     player.send(CLIENT_MESSAGES.equipmentUnequip, {
       actionId: "equipment-unequip",
       slot: "body",

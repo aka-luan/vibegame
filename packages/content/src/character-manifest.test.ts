@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   resolveAppearanceLayerIds,
+  type CharacterManifest,
   validateCharacterManifest,
 } from "./character-manifest.js";
 
@@ -186,5 +187,18 @@ describe("character manifest validation", () => {
         armorLayerId: "removed_armor",
       }),
     ).toEqual(["base"]);
+  });
+
+  it("keeps a declared armor layer when its art falls back to the base sheet", () => {
+    const input = validManifest() as unknown as CharacterManifest;
+    input.layers[1]!.source = null;
+    expect(validateCharacterManifest(input)).toEqual({ success: true });
+    expect(
+      resolveAppearanceLayerIds(input, {
+        rigId: "rig:village_placeholder",
+        baseLayerId: "base",
+        armorLayerId: "tunic",
+      }),
+    ).toEqual(["base", "tunic"]);
   });
 });

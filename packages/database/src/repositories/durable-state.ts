@@ -8,6 +8,7 @@ import {
   characterAppearance,
   characterDiscoveries,
   characterEquipment,
+  characterLoadouts,
   characterInventory,
   characterLocations,
   characterProgression,
@@ -70,15 +71,22 @@ export interface DurableRewardGrant {
 
 export type DurableEquipmentSlot = "body";
 
+export interface DurableEquipmentRequirements {
+  minimumLevel?: number | undefined;
+  classId?: string | undefined;
+}
+
 export interface DurableEquipmentItem {
   itemId: string;
   slot: DurableEquipmentSlot;
   rigId: string;
   layerId: string;
+  requirements: DurableEquipmentRequirements;
 }
 
 export interface DurableEquipmentSnapshot {
   characterRevision: number;
+  appearanceRevision: number;
   appearance: {
     rigId: string;
     baseLayerId: string;
@@ -96,6 +104,7 @@ export type DurableEquipmentMutationResult =
         | "stale_revision"
         | "item_not_owned"
         | "incompatible_item"
+        | "requirements_not_met"
         | "already_equipped"
         | "not_equipped";
       snapshot: DurableEquipmentSnapshot;
@@ -103,6 +112,7 @@ export type DurableEquipmentMutationResult =
 
 export interface DurableCharacterState {
   characterRevision: number;
+  appearanceRevision: number;
   progression: {
     level: number;
     experience: number;
@@ -171,6 +181,7 @@ export class DurableStateRepository {
         rigId: characterAppearance.rigId,
         baseLayerId: characterAppearance.baseLayerId,
         armorLayerId: characterAppearance.armorLayerId,
+        appearanceRevision: characterAppearance.appearanceRevision,
       })
       .from(characterAppearance)
       .where(eq(characterAppearance.characterId, characterId))
@@ -199,9 +210,10 @@ export class DurableStateRepository {
 
     return {
       characterRevision: character.revision,
+      appearanceRevision: appearance.appearanceRevision,
       progression,
       inventory,
-      appearance,
+      appearance: appearanceValues(appearance),
       equipment: equipment.map((item) => ({
         slot: parseEquipmentSlot(item.slot),
         itemId: item.itemId,
@@ -221,6 +233,7 @@ export class DurableStateRepository {
     const state = await this.loadCharacterState(characterId);
     return {
       characterRevision: state.characterRevision,
+      appearanceRevision: state.appearanceRevision,
       appearance: state.appearance,
       inventory: state.inventory,
       equipment: state.equipment,
@@ -253,6 +266,15 @@ export class DurableStateRepository {
       ) {
         return equipmentRejected(current, "incompatible_item");
       }
+      if (
+        !(await this.#meetsRequirements(
+          tx,
+          input.characterId,
+          input.item.requirements,
+        ))
+      ) {
+        return equipmentRejected(current, "requirements_not_met");
+      }
       const existing = current.equipment.find(
         (entry) => entry.slot === input.item.slot,
       );
@@ -274,7 +296,11 @@ export class DurableStateRepository {
         });
       await tx
         .update(characterAppearance)
-        .set({ armorLayerId: input.item.layerId, updatedAt: input.now })
+        .set({
+          armorLayerId: input.item.layerId,
+          appearanceRevision: sql`${characterAppearance.appearanceRevision} + 1`,
+          updatedAt: input.now,
+        })
         .where(eq(characterAppearance.characterId, input.characterId));
       await this.#bumpCharacterRevision(
         tx,
@@ -317,7 +343,11 @@ export class DurableStateRepository {
         );
       await tx
         .update(characterAppearance)
-        .set({ armorLayerId: "", updatedAt: input.now })
+        .set({
+          armorLayerId: "",
+          appearanceRevision: sql`${characterAppearance.appearanceRevision} + 1`,
+          updatedAt: input.now,
+        })
         .where(eq(characterAppearance.characterId, input.characterId));
       await this.#bumpCharacterRevision(
         tx,
@@ -577,6 +607,7 @@ export class DurableStateRepository {
         rigId: characterAppearance.rigId,
         baseLayerId: characterAppearance.baseLayerId,
         armorLayerId: characterAppearance.armorLayerId,
+        appearanceRevision: characterAppearance.appearanceRevision,
       })
       .from(characterAppearance)
       .where(eq(characterAppearance.characterId, characterId))
@@ -600,13 +631,42 @@ export class DurableStateRepository {
       .where(eq(characterEquipment.characterId, characterId));
     return {
       characterRevision: character.revision,
-      appearance,
+      appearanceRevision: appearance.appearanceRevision,
+      appearance: appearanceValues(appearance),
       inventory,
       equipment: equipment.map((item) => ({
         slot: parseEquipmentSlot(item.slot),
         itemId: item.itemId,
       })),
     };
+  }
+
+  async #meetsRequirements(
+    tx: GameTransaction,
+    characterId: string,
+    requirements: DurableEquipmentRequirements,
+  ): Promise<boolean> {
+    const [character] = await tx
+      .select({ classId: characterLoadouts.classId })
+      .from(characterLoadouts)
+      .where(eq(characterLoadouts.characterId, characterId))
+      .limit(1);
+    const [progression] = await tx
+      .select({ level: characterProgression.level })
+      .from(characterProgression)
+      .where(eq(characterProgression.characterId, characterId))
+      .limit(1);
+    if (!character || !progression) return false;
+    if (
+      requirements.classId !== undefined &&
+      requirements.classId !== character.classId
+    ) {
+      return false;
+    }
+    return (
+      requirements.minimumLevel === undefined ||
+      progression.level >= requirements.minimumLevel
+    );
   }
 
   async #lockedQuest(
@@ -800,6 +860,18 @@ function parseQuestStatus(status: string): DurableQuestStatus {
     return status;
   }
   throw new Error(`Invalid durable quest status: ${status}`);
+}
+
+function appearanceValues(appearance: {
+  rigId: string;
+  baseLayerId: string;
+  armorLayerId: string;
+}): DurableEquipmentSnapshot["appearance"] {
+  return {
+    rigId: appearance.rigId,
+    baseLayerId: appearance.baseLayerId,
+    armorLayerId: appearance.armorLayerId,
+  };
 }
 
 function parseConnectionState(

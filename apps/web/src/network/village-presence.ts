@@ -155,6 +155,7 @@ const equipmentAppearanceSchema = z
 const equipmentStateSchema = z
   .object({
     characterRevision: z.number().int().nonnegative(),
+    appearanceRevision: z.number().int().nonnegative(),
     appearance: equipmentAppearanceSchema,
     inventory: z.array(
       z

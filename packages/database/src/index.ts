@@ -5,6 +5,8 @@ import { Pool } from "pg";
 
 import * as schema from "./schema.js";
 
+export { sql } from "drizzle-orm";
+
 export * from "./repositories/guest-account.js";
 export * from "./repositories/durable-state.js";
 export * from "./schema.js";

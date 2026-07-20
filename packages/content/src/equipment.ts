@@ -7,10 +7,19 @@ const equipmentItemSchema = z.object({
   slot: z.literal("body"),
   clientVisible: z.object({
     displayName: z.string().trim().min(1),
+    layerId: z.string().regex(/^[a-z][a-z0-9_]*$/),
   }),
   serverOnly: z.object({
     rigId: z.string().regex(/^rig:[a-z][a-z0-9_]*$/),
-    layerId: z.string().regex(/^[a-z][a-z0-9_]*$/),
+    requirements: z
+      .object({
+        minimumLevel: z.number().int().positive().optional(),
+        classId: z
+          .string()
+          .regex(/^class:[a-z][a-z0-9_]*$/)
+          .optional(),
+      })
+      .strict(),
   }),
 });
 
@@ -51,6 +60,10 @@ export interface ClientEquipmentCatalog {
   }[];
 }
 
+export type EquipmentRequirements = NonNullable<
+  EquipmentItemDefinition["serverOnly"]["requirements"]
+>;
+
 export function compileClientEquipmentCatalog(
   catalog: EquipmentCatalog,
 ): ClientEquipmentCatalog {
@@ -60,7 +73,7 @@ export function compileClientEquipmentCatalog(
       id: item.id,
       slot: item.slot,
       displayName: item.clientVisible.displayName,
-      layerId: item.serverOnly.layerId,
+      layerId: item.clientVisible.layerId,
     })),
   };
 }
@@ -94,10 +107,10 @@ export function validateEquipmentManifestCompatibility(
         message: `Equipment rig does not match the canonical character manifest: ${item.serverOnly.rigId}`,
       });
     }
-    if (!layerIds.has(item.serverOnly.layerId)) {
+    if (!layerIds.has(item.clientVisible.layerId)) {
       issues.push({
-        path: `items.${index}.serverOnly.layerId`,
-        message: `Equipment layer does not exist in the canonical character manifest: ${item.serverOnly.layerId}`,
+        path: `items.${index}.clientVisible.layerId`,
+        message: `Equipment layer does not exist in the canonical character manifest: ${item.clientVisible.layerId}`,
       });
     }
   });

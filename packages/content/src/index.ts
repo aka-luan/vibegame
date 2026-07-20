@@ -77,6 +77,26 @@ export const contentSchema = z
           message: `Missing equipment item reference: ${item.id}`,
         });
       }
+      const requiredClassId = item.serverOnly.requirements.classId;
+      if (
+        requiredClassId !== undefined &&
+        !content.combat?.classes.some(
+          (classDefinition) => classDefinition.id === requiredClassId,
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: [
+            "equipment",
+            "items",
+            itemIndex,
+            "serverOnly",
+            "requirements",
+            "classId",
+          ],
+          message: `Missing equipment class requirement reference: ${requiredClassId}`,
+        });
+      }
     });
 
     const dialogue = content.dialogue;

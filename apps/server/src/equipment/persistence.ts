@@ -85,6 +85,7 @@ export class InMemoryEquipmentPersistence implements EquipmentPersistence {
     if (existing) return Promise.resolve(cloneSnapshot(existing));
     const snapshot: DurableEquipmentSnapshot = {
       characterRevision: 0,
+      appearanceRevision: 0,
       appearance: { ...initialAppearance },
       inventory: [{ itemId: "item:trailwarden_tunic", quantity: 1 }],
       equipment: [{ slot: "body", itemId: "item:trailwarden_tunic" }],
@@ -112,6 +113,15 @@ export class InMemoryEquipmentPersistence implements EquipmentPersistence {
     if (input.item.rigId !== snapshot.appearance.rigId) {
       return rejected(snapshot, "incompatible_item");
     }
+    if (
+      input.item.requirements.classId !== undefined &&
+      input.item.requirements.classId !== "class:trailwarden"
+    ) {
+      return rejected(snapshot, "requirements_not_met");
+    }
+    if ((input.item.requirements.minimumLevel ?? 1) > 1) {
+      return rejected(snapshot, "requirements_not_met");
+    }
     const current = snapshot.equipment.find(
       (entry) => entry.slot === input.item.slot,
     );
@@ -127,6 +137,7 @@ export class InMemoryEquipmentPersistence implements EquipmentPersistence {
     });
     snapshot.appearance.armorLayerId = input.item.layerId;
     snapshot.characterRevision += 1;
+    snapshot.appearanceRevision += 1;
     this.#snapshots.set(input.characterId, snapshot);
     return { applied: true, snapshot: cloneSnapshot(snapshot) };
   }
@@ -151,6 +162,7 @@ export class InMemoryEquipmentPersistence implements EquipmentPersistence {
     );
     snapshot.appearance.armorLayerId = "";
     snapshot.characterRevision += 1;
+    snapshot.appearanceRevision += 1;
     this.#snapshots.set(input.characterId, snapshot);
     return { applied: true, snapshot: cloneSnapshot(snapshot) };
   }
@@ -161,6 +173,7 @@ function cloneSnapshot(
 ): DurableEquipmentSnapshot {
   return {
     characterRevision: snapshot.characterRevision,
+    appearanceRevision: snapshot.appearanceRevision,
     appearance: { ...snapshot.appearance },
     inventory: snapshot.inventory.map((item) => ({ ...item })),
     equipment: snapshot.equipment.map((item) => ({ ...item })),

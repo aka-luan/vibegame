@@ -38,6 +38,8 @@ export const ERROR_CODES = {
   equipmentItemNotFound: "EQUIPMENT_ITEM_NOT_FOUND",
   itemNotOwned: "ITEM_NOT_OWNED",
   incompatibleEquipment: "INCOMPATIBLE_EQUIPMENT",
+  equipmentRequirementsNotMet: "EQUIPMENT_REQUIREMENTS_NOT_MET",
+  equipmentAlreadyEquipped: "EQUIPMENT_ALREADY_EQUIPPED",
   staleCharacterRevision: "STALE_CHARACTER_REVISION",
   equipmentNotEquipped: "EQUIPMENT_NOT_EQUIPPED",
   equipmentPersistenceUnavailable: "EQUIPMENT_PERSISTENCE_UNAVAILABLE",
@@ -121,6 +123,7 @@ export type EquipmentSlot = "body";
 
 export interface EquipmentStateMessage {
   characterRevision: number;
+  appearanceRevision: number;
   appearance: PublicAppearance;
   inventory: { itemId: string; quantity: number }[];
   equipment: { slot: EquipmentSlot; itemId: string }[];

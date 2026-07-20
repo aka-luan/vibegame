@@ -131,6 +131,7 @@ describe("durable progress persistence", () => {
 
     const state = await durableState.loadCharacterState(characterId);
     expect(state.characterRevision).toBe(3);
+    expect(state.appearanceRevision).toBe(0);
     expect(state.progression).toMatchObject({
       level: 2,
       experience: 100,

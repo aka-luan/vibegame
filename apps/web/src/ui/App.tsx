@@ -418,7 +418,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
           <>
             <p>
               Appearance revision{" "}
-              {combatSnapshot.equipmentState.characterRevision}.
+              {combatSnapshot.equipmentState.appearanceRevision}.
             </p>
             <ul className="equipment-list">
               {combatSnapshot.equipmentState.inventory.map((entry) => {

@@ -435,13 +435,6 @@ class VillageScene extends Phaser.Scene {
     this.game.canvas.dataset.publicPlayerNames = JSON.stringify(
       snapshot.players.map((player) => player.displayName).sort(),
     );
-    this.game.canvas.dataset.publicPlayerArmors = JSON.stringify(
-      snapshot.players.map((player) => ({
-        displayName: player.displayName,
-        armorLayerId: player.appearance.armorLayerId,
-        appearanceRevision: player.appearanceRevision,
-      })),
-    );
     const local = snapshot.players.find(
       (player) => player.entityId === snapshot.localEntityId,
     );

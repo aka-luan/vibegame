@@ -12,8 +12,11 @@ const catalog = {
     {
       id: "item:trailwarden_tunic",
       slot: "body",
-      clientVisible: { displayName: "Trailwarden Tunic" },
-      serverOnly: { rigId: "rig:village_placeholder", layerId: "tunic" },
+      clientVisible: { displayName: "Trailwarden Tunic", layerId: "tunic" },
+      serverOnly: {
+        rigId: "rig:village_placeholder",
+        requirements: { minimumLevel: 1, classId: "class:trailwarden" },
+      },
     },
   ],
 } as const;
@@ -37,6 +40,9 @@ describe("equipment catalog", () => {
     expect(
       JSON.stringify(compileClientEquipmentCatalog(result.data)),
     ).not.toContain("village_placeholder");
+    expect(
+      JSON.stringify(compileClientEquipmentCatalog(result.data)),
+    ).not.toContain("minimumLevel");
   });
 
   it("rejects duplicate equipment identifiers", () => {
@@ -52,6 +58,23 @@ describe("equipment catalog", () => {
           path: "items.1.id",
           message:
             "Duplicate equipment item identifier: item:trailwarden_tunic",
+        },
+      ],
+    });
+  });
+
+  it("rejects equipment that declares a slot outside the approved body slot", () => {
+    expect(
+      validateEquipmentCatalog({
+        ...catalog,
+        items: [{ ...catalog.items[0], slot: "head" }],
+      }),
+    ).toMatchObject({
+      success: false,
+      issues: [
+        {
+          path: "items.0.slot",
+          message: 'Invalid input: expected "body"',
         },
       ],
     });
@@ -73,6 +96,13 @@ describe("equipment catalog", () => {
               ...catalog.items[0],
               serverOnly: {
                 rigId: "rig:other",
+                requirements: {
+                  minimumLevel: 1,
+                  classId: "class:trailwarden",
+                },
+              },
+              clientVisible: {
+                ...catalog.items[0].clientVisible,
                 layerId: "missing_layer",
               },
             },
@@ -90,7 +120,7 @@ describe("equipment catalog", () => {
           "Equipment rig does not match the canonical character manifest: rig:other",
       },
       {
-        path: "items.0.serverOnly.layerId",
+        path: "items.0.clientVisible.layerId",
         message:
           "Equipment layer does not exist in the canonical character manifest: missing_layer",
       },

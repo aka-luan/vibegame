@@ -38,6 +38,13 @@ export interface StartFoundationServerOptions {
   rewardPersistence?: RewardPersistence | undefined;
   questPersistence?: QuestPersistence | undefined;
   equipmentPersistence?: EquipmentPersistence | undefined;
+  logEquipmentPersistenceFailure?:
+    | ((details: {
+        operation: string;
+        characterId: string;
+        error: unknown;
+      }) => void)
+    | undefined;
   checkpointLocation?:
     ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
   logger?: boolean | undefined;
@@ -132,6 +139,22 @@ export async function startFoundationServer(
         ...(options.equipmentPersistence === undefined
           ? {}
           : { equipmentPersistence: options.equipmentPersistence }),
+        ...(options.logEquipmentPersistenceFailure === undefined
+          ? {
+              logEquipmentPersistenceFailure(details) {
+                app.log.error(
+                  {
+                    event: "equipment_persistence_failure",
+                    ...details,
+                  },
+                  "Equipment persistence operation failed",
+                );
+              },
+            }
+          : {
+              logEquipmentPersistenceFailure:
+                options.logEquipmentPersistenceFailure,
+            }),
         developmentEquipmentEnabled: options.developmentLoginEnabled === true,
         ...(options.checkpointLocation === undefined
           ? {}

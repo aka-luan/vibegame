@@ -229,6 +229,11 @@ export function createVillageRoom(
     questPersistence?: QuestPersistence;
     equipmentPersistence?: EquipmentPersistence;
     developmentEquipmentEnabled?: boolean;
+    logEquipmentPersistenceFailure?: (details: {
+      operation: string;
+      characterId: string;
+      error: unknown;
+    }) => void;
     checkpointLocation?:
       ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
     recordLifecycle?: (
@@ -260,6 +265,8 @@ export function createVillageRoom(
       new InMemoryEquipmentPersistence();
     readonly #developmentEquipmentEnabled =
       options.developmentEquipmentEnabled ?? false;
+    readonly #logEquipmentPersistenceFailure =
+      options.logEquipmentPersistenceFailure;
     readonly #checkpointLocation = options.checkpointLocation;
     readonly #questDefinition = villageQuests.quests.find(
       (quest) => quest.id === "quest:forest_mossbacks",
@@ -613,12 +620,18 @@ export function createVillageRoom(
             itemId: definition.id,
             slot: definition.slot,
             rigId: definition.serverOnly.rigId,
-            layerId: definition.serverOnly.layerId,
+            layerId: definition.clientVisible.layerId,
+            requirements: definition.serverOnly.requirements,
           },
           expectedCharacterRevision: intention.data.expectedCharacterRevision,
           now: new Date(this.state.serverTimeMs),
         });
-      } catch {
+      } catch (error) {
+        this.#recordEquipmentPersistenceFailure(
+          "equip",
+          identity.characterId,
+          error,
+        );
         this.#sendEquipmentResult(client, {
           accepted: false,
           actionId: intention.data.actionId,
@@ -675,7 +688,12 @@ export function createVillageRoom(
           expectedCharacterRevision: intention.data.expectedCharacterRevision,
           now: new Date(this.state.serverTimeMs),
         });
-      } catch {
+      } catch (error) {
+        this.#recordEquipmentPersistenceFailure(
+          "unequip",
+          identity.characterId,
+          error,
+        );
         this.#sendEquipmentResult(client, {
           accepted: false,
           actionId: intention.data.actionId,
@@ -708,7 +726,7 @@ export function createVillageRoom(
       const player = this.state.players.get(sessionId);
       if (!player) return;
       player.appearance.assign(snapshot.appearance);
-      player.appearanceRevision = snapshot.characterRevision;
+      player.appearanceRevision = snapshot.appearanceRevision;
     }
 
     #equipmentForCharacter(characterId: string): EquipmentPersistence {
@@ -721,6 +739,7 @@ export function createVillageRoom(
     #equipmentState(snapshot: DurableEquipmentSnapshot): EquipmentStateMessage {
       return {
         characterRevision: snapshot.characterRevision,
+        appearanceRevision: snapshot.appearanceRevision,
         appearance: { ...snapshot.appearance },
         inventory: snapshot.inventory.map((item) => ({ ...item })),
         equipment: snapshot.equipment.map((item) => ({ ...item })),
@@ -739,6 +758,18 @@ export function createVillageRoom(
 
     #sendEquipmentResult(client: Client, result: EquipmentResult): void {
       client.send(SERVER_MESSAGES.equipmentResult, result);
+    }
+
+    #recordEquipmentPersistenceFailure(
+      operation: string,
+      characterId: string,
+      error: unknown,
+    ): void {
+      this.#logEquipmentPersistenceFailure?.({
+        operation,
+        characterId,
+        error,
+      });
     }
 
     #handleInteraction(client: Client, unsafeIntention: unknown): void {
@@ -957,7 +988,13 @@ export function createVillageRoom(
               this.#applyEquipmentSnapshot(client.sessionId, snapshot);
               this.#sendEquipmentState(client);
             })
-            .catch(() => undefined);
+            .catch((error) => {
+              this.#recordEquipmentPersistenceFailure(
+                "quest_completion_reload",
+                identity.characterId,
+                error,
+              );
+            });
         }
         return true;
       } catch {
@@ -1254,7 +1291,12 @@ export function createVillageRoom(
           consumption.admission.characterId,
           consumption.admission.appearance,
         );
-      } catch {
+      } catch (error) {
+        this.#recordEquipmentPersistenceFailure(
+          "join_load",
+          consumption.admission.characterId,
+          error,
+        );
         throw new ServerError(
           4_226,
           ERROR_CODES.equipmentPersistenceUnavailable,
@@ -1272,7 +1314,7 @@ export function createVillageRoom(
       player.x = savedPosition?.x ?? spawn.x;
       player.y = savedPosition?.y ?? spawn.y;
       player.appearance.assign(equipment.appearance);
-      player.appearanceRevision = equipment.characterRevision;
+      player.appearanceRevision = equipment.appearanceRevision;
       this.state.players.set(client.sessionId, player);
       this.#equipmentSnapshots.set(client.sessionId, equipment);
       this.#playerIdentity.set(client.sessionId, {
@@ -1667,7 +1709,13 @@ export function createVillageRoom(
                 );
                 if (currentClient) this.#sendEquipmentState(currentClient);
               })
-              .catch(() => undefined);
+              .catch((error) => {
+                this.#recordEquipmentPersistenceFailure(
+                  "reward_reload",
+                  characterId,
+                  error,
+                );
+              });
             client?.send(SERVER_MESSAGES.rewardSummary, {
               sourceMonsterId,
               items: [{ itemId, quantity: 1 }],
@@ -1784,6 +1832,7 @@ function equipmentFailureCode(
     | "stale_revision"
     | "item_not_owned"
     | "incompatible_item"
+    | "requirements_not_met"
     | "already_equipped"
     | "not_equipped",
 ): (typeof ERROR_CODES)[keyof typeof ERROR_CODES] {
@@ -1794,9 +1843,11 @@ function equipmentFailureCode(
       return ERROR_CODES.itemNotOwned;
     case "incompatible_item":
       return ERROR_CODES.incompatibleEquipment;
+    case "requirements_not_met":
+      return ERROR_CODES.equipmentRequirementsNotMet;
     case "not_equipped":
       return ERROR_CODES.equipmentNotEquipped;
     case "already_equipped":
-      return ERROR_CODES.invalidEquipmentIntention;
+      return ERROR_CODES.equipmentAlreadyEquipped;
   }
 }
