@@ -20,6 +20,10 @@ import {
   type CombatStateMessage,
   type CombatEffectFeedback,
   type MovementIntention,
+  type PublicAppearance as PublicAppearanceState,
+  type PublicMonsterState,
+  type PublicPlayerState,
+  type PublicVillageState,
   type QuestRewardMessage,
   type QuestStateMessage,
 } from "@gameish/protocol";
@@ -138,10 +142,10 @@ class PublicPlayer extends Schema {
   y = 0;
 
   @type("string")
-  facing = "east";
+  facing: PublicPlayerState["facing"] = "east";
 
   @type("string")
-  animation = "idle";
+  animation: PublicPlayerState["animation"] = "idle";
 
   @type(PublicAppearance)
   appearance = new PublicAppearance();
@@ -158,7 +162,7 @@ class PublicMonster extends Schema {
   y = 0;
 
   @type("string")
-  animation = "idle";
+  animation: PublicMonsterState["animation"] = "idle";
 
   @type("number")
   healthFraction = 1;
@@ -174,6 +178,39 @@ class VillageState extends Schema {
   @type({ map: PublicMonster })
   monsters = new MapSchema<PublicMonster>();
 }
+
+/**
+ * Compile-time proof that the room's Colyseus schema classes conform to the
+ * public room-state contract in `@gameish/protocol`. If a field is removed
+ * or retyped on the schema classes without a matching protocol update, this
+ * fails to compile.
+ */
+type AssertConforms<T extends U, U = T> = T;
+
+export type PublicAppearanceConformance = AssertConforms<
+  PublicAppearance,
+  PublicAppearanceState
+>;
+export type PublicPlayerConformance = AssertConforms<
+  PublicPlayer,
+  PublicPlayerState
+>;
+export type PublicMonsterConformance = AssertConforms<
+  PublicMonster,
+  PublicMonsterState
+>;
+export type VillageStateConformance = AssertConforms<
+  VillageState,
+  PublicVillageState
+>;
+
+export type {
+  AssertConforms,
+  PublicAppearance,
+  PublicPlayer,
+  PublicMonster,
+  VillageState,
+};
 
 interface PlayerCombatState {
   targetEntityId: string | null;
