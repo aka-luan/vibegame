@@ -33,6 +33,7 @@ import {
   applyMonsterEffectsToPlayer,
   buildCombatStateMessage,
   resolveCombatAction,
+  CombatActivityLog,
   type CombatActionOutcome,
   type CombatActionState,
   type PlayerCombatState,
@@ -252,7 +253,7 @@ export function createVillageRoom(
     readonly #lastInteractionAtMs = new Map<string, number>();
     readonly #lastDialogueActionAtMs = new Map<string, number>();
     readonly #joinedAtMs = new Map<string, number>();
-    readonly #lastActivityAtMs = new Map<string, number>();
+    readonly #combatActivity = new CombatActivityLog();
     readonly #lastCheckpointAtMs = new Map<string, number>();
     readonly #disconnectedSessions = new Set<string>();
     #participationWindow!: ParticipationWindow;
@@ -770,10 +771,6 @@ export function createVillageRoom(
         questStatuses: new Map([[questSnapshot.questId, questSnapshot.status]]),
       });
       this.#joinedAtMs.set(client.sessionId, this.state.serverTimeMs);
-      this.#lastActivityAtMs.set(
-        consumption.admission.characterId,
-        this.state.serverTimeMs,
-      );
       this.#pendingIntentions.set(client.sessionId, new Map());
       this.#lastProcessedSequences.set(client.sessionId, 0);
       this.#intentionViolations.set(client.sessionId, 0);
@@ -1037,7 +1034,7 @@ export function createVillageRoom(
       const identity = this.#playerIdentity.get(client.sessionId);
       if (!identity) return;
       const now = this.state.serverTimeMs;
-      this.#lastActivityAtMs.set(identity.characterId, now);
+      this.#combatActivity.record(identity.characterId, now);
       this.#participationWindow.recordActivity({
         characterId: identity.characterId,
         partyId: identity.partyId,
@@ -1054,17 +1051,19 @@ export function createVillageRoom(
       for (const [sessionId, player] of this.state.players) {
         const identity = this.#playerIdentity.get(sessionId);
         if (!identity) continue;
+        const joinedAtMs =
+          this.#joinedAtMs.get(sessionId) ?? Number.MAX_SAFE_INTEGER;
         candidates.push({
           characterId: identity.characterId,
           partyId: identity.partyId,
           x: player.x,
           y: player.y,
           connected: !this.#disconnectedSessions.has(sessionId),
-          joinedAtMs:
-            this.#joinedAtMs.get(sessionId) ?? Number.MAX_SAFE_INTEGER,
-          lastActivityAtMs:
-            this.#lastActivityAtMs.get(identity.characterId) ??
-            this.state.serverTimeMs,
+          joinedAtMs,
+          lastActivityAtMs: this.#combatActivity.lastActivityAtMs(
+            identity.characterId,
+            joinedAtMs,
+          ),
         });
       }
       const eligibleCharacters = this.#participationWindow.eligibleCharacters({

@@ -65,6 +65,27 @@ export interface CombatActionPosition {
 }
 
 /**
+ * Records when each character last took a combat action, for participation
+ * eligibility.
+ *
+ * A character who has taken no combat action yet is *not* idle since the
+ * epoch: its activity time is its join time. Resolving that here rather than
+ * at the call site is what keeps a freshly joined player — who qualifies
+ * through a party window without landing a hit — from being scored as AFK.
+ */
+export class CombatActivityLog {
+  readonly #lastActivityAtMs = new Map<string, number>();
+
+  record(characterId: string, atMs: number): void {
+    this.#lastActivityAtMs.set(characterId, atMs);
+  }
+
+  lastActivityAtMs(characterId: string, joinedAtMs: number): number {
+    return this.#lastActivityAtMs.get(characterId) ?? joinedAtMs;
+  }
+}
+
+/**
  * Narrow port the combat action module needs from the monster's lifecycle.
  * `MonsterLifecycle` satisfies this structurally, so it can be passed
  * straight through by the room while remaining Colyseus-free and unit

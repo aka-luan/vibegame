@@ -8,6 +8,7 @@ import {
 
 import {
   resolveCombatAction,
+  CombatActivityLog,
   type CombatActionOutcome,
   type CombatActionState,
   type CombatMonsterPort,
@@ -701,11 +702,26 @@ describe("ability", () => {
 });
 
 describe("AFK / lastActivityAtMs semantics (AC3)", () => {
-  it("does not treat a freshly joined, non-attacking party member as AFK when lastActivityAtMs is initialized to join time", () => {
+  it("resolves an unrecorded character's activity to its join time, not the epoch", () => {
+    const log = new CombatActivityLog();
+
+    expect(log.lastActivityAtMs("character:latecomer", 4_900)).toBe(4_900);
+  });
+
+  it("resolves a recorded character's activity to its last combat action", () => {
+    const log = new CombatActivityLog();
+    log.record("character:attacker", 3_200);
+
+    expect(log.lastActivityAtMs("character:attacker", 0)).toBe(3_200);
+  });
+
+  it("does not treat a freshly joined party member who has not acted as AFK", () => {
+    const log = new CombatActivityLog();
     const window = new ParticipationWindow({
       proximityRadius: 200,
       afkAfterMs: 2_500,
     });
+    log.record("character:attacker", 0);
     window.recordActivity({
       characterId: "character:attacker",
       partyId: "party:1",
@@ -727,7 +743,7 @@ describe("AFK / lastActivityAtMs semantics (AC3)", () => {
           y: 100,
           connected: true,
           joinedAtMs: 0,
-          lastActivityAtMs: 0,
+          lastActivityAtMs: log.lastActivityAtMs("character:attacker", 0),
         },
         {
           characterId: "character:latecomer",
@@ -736,55 +752,14 @@ describe("AFK / lastActivityAtMs semantics (AC3)", () => {
           y: 100,
           connected: true,
           joinedAtMs,
-          // Explicit initial value: the join time, not 0.
-          lastActivityAtMs: joinedAtMs,
+          lastActivityAtMs: log.lastActivityAtMs(
+            "character:latecomer",
+            joinedAtMs,
+          ),
         },
       ],
     });
 
     expect(eligible).toContain("character:latecomer");
-  });
-
-  it("would have wrongly excluded that same player as AFK under the old `?? 0` fallback", () => {
-    const window = new ParticipationWindow({
-      proximityRadius: 200,
-      afkAfterMs: 2_500,
-    });
-    window.recordActivity({
-      characterId: "character:attacker",
-      partyId: "party:1",
-      atMs: 0,
-    });
-
-    const defeatedAtMs = 5_000;
-    window.close(defeatedAtMs);
-
-    const eligible = window.eligibleCharacters({
-      defeatedAtMs,
-      monsterPosition: { x: 100, y: 100 },
-      candidates: [
-        {
-          characterId: "character:attacker",
-          partyId: "party:1",
-          x: 100,
-          y: 100,
-          connected: true,
-          joinedAtMs: 0,
-          lastActivityAtMs: 0,
-        },
-        {
-          characterId: "character:latecomer",
-          partyId: "party:1",
-          x: 100,
-          y: 100,
-          connected: true,
-          joinedAtMs: 4_900,
-          // The bug: untracked activity defaulted to epoch zero.
-          lastActivityAtMs: 0,
-        },
-      ],
-    });
-
-    expect(eligible).not.toContain("character:latecomer");
   });
 });
