@@ -5,6 +5,7 @@ import villageCharacter from "@gameish/content/village-character";
 import villageMap from "@gameish/content/village-map-server";
 import villageDialogue from "@gameish/content/village-dialogue-server";
 import villageQuests from "@gameish/content/village-quests-server";
+import { villageSlice } from "@gameish/content/slices/village";
 import type {
   DurableCharacterState,
   LocationCheckpointInput,
@@ -261,10 +262,10 @@ export function createVillageRoom(
       options.rewardPersistence ?? new InMemoryRewardPersistence();
     readonly #questPersistence =
       options.questPersistence ??
-      new InMemoryQuestPersistence("quest:forest_mossbacks");
+      new InMemoryQuestPersistence(villageSlice.questId);
     readonly #checkpointLocation = options.checkpointLocation;
     readonly #questDefinition = villageQuests.quests.find(
-      (quest) => quest.id === "quest:forest_mossbacks",
+      (quest) => quest.id === villageSlice.questId,
     );
     readonly #playerCombat = new Map<string, PlayerCombatState>();
     readonly #playerIdentity = new Map<
@@ -311,7 +312,7 @@ export function createVillageRoom(
         throw new Error("Village boss action is unavailable");
       }
       this.#monsterLifecycle = new MonsterLifecycle({
-        entityId: "monster:village_mossback:1",
+        entityId: villageSlice.monsterEntityId,
         monster,
         encounter,
         world: { bounds: villageMap.bounds, obstacles: villageMap.collision },
@@ -1046,17 +1047,19 @@ export function createVillageRoom(
       if (!consumption.success) {
         throw new ServerError(4_223, consumption.code);
       }
-      if (consumption.admission.logicalDestination !== "map:village") {
+      if (consumption.admission.logicalDestination !== villageSlice.mapId) {
         throw new ServerError(4_224, ERROR_CODES.destinationNotAllowed);
       }
-      if (consumption.admission.contentVersion !== "content:village_m1_v2") {
+      if (
+        consumption.admission.contentVersion !== villageSlice.contentVersion
+      ) {
         throw new ServerError(4_225, ERROR_CODES.staleContentVersion);
       }
 
       const player = new PublicPlayer();
       player.displayName = consumption.admission.displayName;
       const spawn = villageMap.spawns.find(
-        (candidate) => candidate.entranceId === "village_square",
+        (candidate) => candidate.entranceId === villageSlice.entranceId,
       );
       if (!spawn) throw new Error("Village player spawn is unavailable");
       const savedPosition = validSavedPosition(
@@ -1072,7 +1075,7 @@ export function createVillageRoom(
       });
       const questSnapshot = await this.#questPersistence.loadQuest(
         consumption.admission.characterId,
-        this.#questDefinition?.id ?? "quest:forest_mossbacks",
+        this.#questDefinition?.id ?? villageSlice.questId,
       );
       this.#questSnapshots.set(client.sessionId, questSnapshot);
       this.#characterDialogueState.set(client.sessionId, {
@@ -1292,14 +1295,14 @@ export function createVillageRoom(
       const player = this.state.players.get(sessionId);
       const identity = this.#playerIdentity.get(sessionId);
       const spawn = villageMap.spawns.find(
-        (candidate) => candidate.entranceId === "village_square",
+        (candidate) => candidate.entranceId === villageSlice.entranceId,
       );
       if (!player || !identity || !spawn) return;
       this.#lastCheckpointAtMs.set(sessionId, this.state.serverTimeMs);
       void this.#checkpointLocation({
         characterId: identity.characterId,
-        logicalMapId: "map:village",
-        entranceId: "village_square",
+        logicalMapId: villageSlice.mapId,
+        entranceId: villageSlice.entranceId,
         position: { x: player.x, y: player.y },
         safeSpawn: { x: spawn.x, y: spawn.y },
         connectionState,
@@ -1518,7 +1521,7 @@ function validSavedPosition(
   const location = state?.location;
   if (
     !location ||
-    location.logicalMapId !== "map:village" ||
+    location.logicalMapId !== villageSlice.mapId ||
     !villageMap.spawns.some((spawn) => spawn.entranceId === location.entranceId)
   ) {
     return undefined;

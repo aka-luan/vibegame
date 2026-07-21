@@ -8,6 +8,10 @@
       "types": "./src/index.ts",
       "default": "./dist/index.js"
     },
+    "./slices/village": {
+      "types": "./src/slices/village.ts",
+      "default": "./dist/slices/village.js"
+    },
     "./canonical": {
       "types": "./src/canonical.ts",
       "default": "./dist/canonical.js"
