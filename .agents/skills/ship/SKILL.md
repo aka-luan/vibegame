@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Autonomously take one approved GitHub issue from verification through isolated implementation, validation, independent review, and a draft pull request. Use when the user asks to ship, implement, or carry a numbered `ready-for-agent` issue end-to-end; examples include "ship issue #42", "take #42 to a draft PR", and explicit `$ship` invocations.
+description: Autonomously take one approved GitHub issue from verification through isolated implementation, validation, independent review, and a draft pull request. Use when the user explicitly asks to ship a numbered `ready-for-agent` issue, take it through a draft PR, or invokes `$ship`; examples include "ship issue #42" and "take #42 to a draft PR".
 ---
 
 # Ship an approved issue
@@ -15,6 +15,7 @@ Take exactly one numbered issue to a validated draft pull request. Continue betw
 - Never expand scope without the repository owner's explicit approval. Convenience, anticipated future use, and generalization are not sufficient reasons.
 - Never push to `main`, force-push, merge, or deploy.
 - Never claim a validation or manual check that was not run.
+- Treat an explicit `$ship`, "ship," or draft-pull-request request as authorization to commit, push the issue branch, and open a draft pull request. For a request that authorizes implementation but not those Git or GitHub mutations, stop before committing and ask for authorization.
 
 ## 1. Verify the issue
 
@@ -31,7 +32,7 @@ Stop if the issue is closed, lacks `ready-for-agent`, or has an incomplete block
 
 ## 2. Create an isolated worktree
 
-Inspect the user's checkout without changing it. Fetch current `origin/main`, then create `.worktrees/issue-<number>` on a new `<type>/issue-<number>` branch based on `origin/main`. Choose `<type>` from the issue's conventional-commit category.
+Inspect the user's checkout without changing it. Before any fetch, branch, or worktree mutation, read its `PLAN.md` and applicable `AGENTS.md` instructions. Fetch current `origin/main`, then create `.worktrees/issue-<number>` on a new `<type>/issue-<number>` branch based on `origin/main`. Choose `<type>` from the issue's conventional-commit category.
 
 If that worktree or branch already exists, inspect it and continue only when it unambiguously belongs to the same issue. Never delete or reset an existing worktree to resolve a collision.
 
