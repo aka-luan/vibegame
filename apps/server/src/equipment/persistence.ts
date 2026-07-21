@@ -1,14 +1,26 @@
 import type {
   DurableEquipmentItem,
   DurableEquipmentMutationResult,
+  DurableEquipmentSlot,
   DurableEquipmentSnapshot,
   DurableStateRepository,
+  EquipmentRulesContext,
 } from "@gameish/database";
+
+import { decideEquip, decideUnequip, equipmentDecider } from "./rules.js";
 
 export interface EquipmentAppearance {
   rigId: string;
   baseLayerId: string;
   armorLayerId: string;
+}
+
+export interface EquipmentSeed {
+  appearance: EquipmentAppearance;
+  inventory: { itemId: string; quantity: number }[];
+  equipment: { slot: DurableEquipmentSlot; itemId: string }[];
+  /** Character facts the rules decider needs to judge item requirements. */
+  context: EquipmentRulesContext;
 }
 
 export interface EquipmentPersistence {
@@ -33,7 +45,11 @@ export interface EquipmentPersistence {
 export class PostgresEquipmentPersistence implements EquipmentPersistence {
   constructor(readonly repository: DurableStateRepository) {}
 
-  load(characterId: string): Promise<DurableEquipmentSnapshot> {
+  load(
+    characterId: string,
+    initialAppearance?: EquipmentAppearance,
+  ): Promise<DurableEquipmentSnapshot> {
+    void initialAppearance;
     return this.repository.loadEquipment(characterId);
   }
 
@@ -43,7 +59,7 @@ export class PostgresEquipmentPersistence implements EquipmentPersistence {
     expectedCharacterRevision: number;
     now: Date;
   }): Promise<DurableEquipmentMutationResult> {
-    return this.repository.equipItem(input);
+    return this.repository.equipItem({ ...input, decide: equipmentDecider });
   }
 
   unequipItem(input: {
@@ -52,7 +68,10 @@ export class PostgresEquipmentPersistence implements EquipmentPersistence {
     expectedCharacterRevision: number;
     now: Date;
   }): Promise<DurableEquipmentMutationResult> {
-    return this.repository.unequipItem(input);
+    return this.repository.unequipItem({
+      ...input,
+      decide: equipmentDecider,
+    });
   }
 }
 
@@ -73,13 +92,11 @@ export class UnavailableEquipmentPersistence implements EquipmentPersistence {
 export class InMemoryEquipmentPersistence implements EquipmentPersistence {
   readonly #snapshots = new Map<string, DurableEquipmentSnapshot>();
 
+  constructor(readonly seed: EquipmentSeed) {}
+
   load(
     characterId: string,
-    initialAppearance: EquipmentAppearance = {
-      rigId: "rig:village_placeholder",
-      baseLayerId: "base",
-      armorLayerId: "tunic",
-    },
+    initialAppearance: EquipmentAppearance = this.seed.appearance,
   ): Promise<DurableEquipmentSnapshot> {
     const existing = this.#snapshots.get(characterId);
     if (existing) return Promise.resolve(cloneSnapshot(existing));
@@ -87,8 +104,8 @@ export class InMemoryEquipmentPersistence implements EquipmentPersistence {
       characterRevision: 0,
       appearanceRevision: 0,
       appearance: { ...initialAppearance },
-      inventory: [{ itemId: "item:trailwarden_tunic", quantity: 1 }],
-      equipment: [{ slot: "body", itemId: "item:trailwarden_tunic" }],
+      inventory: this.seed.inventory.map((item) => ({ ...item })),
+      equipment: this.seed.equipment.map((item) => ({ ...item })),
     };
     this.#snapshots.set(characterId, snapshot);
     return Promise.resolve(cloneSnapshot(snapshot));
@@ -102,70 +119,42 @@ export class InMemoryEquipmentPersistence implements EquipmentPersistence {
   }): Promise<DurableEquipmentMutationResult> {
     void input.now;
     const snapshot = await this.load(input.characterId);
-    if (snapshot.characterRevision !== input.expectedCharacterRevision) {
-      return rejected(snapshot, "stale_revision");
-    }
-    const owned = snapshot.inventory.find(
-      (entry) => entry.itemId === input.item.itemId,
-    );
-    if (!owned || owned.quantity <= 0)
-      return rejected(snapshot, "item_not_owned");
-    if (input.item.rigId !== snapshot.appearance.rigId) {
-      return rejected(snapshot, "incompatible_item");
-    }
-    if (
-      input.item.requirements.classId !== undefined &&
-      input.item.requirements.classId !== "class:trailwarden"
-    ) {
-      return rejected(snapshot, "requirements_not_met");
-    }
-    if ((input.item.requirements.minimumLevel ?? 1) > 1) {
-      return rejected(snapshot, "requirements_not_met");
-    }
-    const current = snapshot.equipment.find(
-      (entry) => entry.slot === input.item.slot,
-    );
-    if (current?.itemId === input.item.itemId) {
-      return rejected(snapshot, "already_equipped");
-    }
-    snapshot.equipment = snapshot.equipment.filter(
-      (entry) => entry.slot !== input.item.slot,
-    );
-    snapshot.equipment.push({
-      slot: input.item.slot,
-      itemId: input.item.itemId,
+    const result = decideEquip(snapshot, this.seed.context, {
+      item: input.item,
+      expectedCharacterRevision: input.expectedCharacterRevision,
     });
-    snapshot.appearance.armorLayerId = input.item.layerId;
-    snapshot.characterRevision += 1;
-    snapshot.appearanceRevision += 1;
-    this.#snapshots.set(input.characterId, snapshot);
-    return { applied: true, snapshot: cloneSnapshot(snapshot) };
+    if (result.applied) this.#snapshots.set(input.characterId, result.snapshot);
+    return withClonedSnapshot(result);
   }
 
   async unequipItem(input: {
     characterId: string;
-    slot: "body";
+    slot: DurableEquipmentSlot;
     expectedCharacterRevision: number;
     now: Date;
   }): Promise<DurableEquipmentMutationResult> {
     void input.now;
     const snapshot = await this.load(input.characterId);
-    if (snapshot.characterRevision !== input.expectedCharacterRevision) {
-      return rejected(snapshot, "stale_revision");
-    }
-    const equipped = snapshot.equipment.some(
-      (entry) => entry.slot === input.slot,
-    );
-    if (!equipped) return rejected(snapshot, "not_equipped");
-    snapshot.equipment = snapshot.equipment.filter(
-      (entry) => entry.slot !== input.slot,
-    );
-    snapshot.appearance.armorLayerId = "";
-    snapshot.characterRevision += 1;
-    snapshot.appearanceRevision += 1;
-    this.#snapshots.set(input.characterId, snapshot);
-    return { applied: true, snapshot: cloneSnapshot(snapshot) };
+    const result = decideUnequip(snapshot, this.seed.context, {
+      slot: input.slot,
+      expectedCharacterRevision: input.expectedCharacterRevision,
+    });
+    if (result.applied) this.#snapshots.set(input.characterId, result.snapshot);
+    return withClonedSnapshot(result);
   }
+}
+
+function withClonedSnapshot(
+  result: DurableEquipmentMutationResult,
+): DurableEquipmentMutationResult {
+  if (result.applied) {
+    return { applied: true, snapshot: cloneSnapshot(result.snapshot) };
+  }
+  return {
+    applied: false,
+    reason: result.reason,
+    snapshot: cloneSnapshot(result.snapshot),
+  };
 }
 
 function cloneSnapshot(
@@ -178,11 +167,4 @@ function cloneSnapshot(
     inventory: snapshot.inventory.map((item) => ({ ...item })),
     equipment: snapshot.equipment.map((item) => ({ ...item })),
   };
-}
-
-function rejected(
-  snapshot: DurableEquipmentSnapshot,
-  reason: Extract<DurableEquipmentMutationResult, { applied: false }>["reason"],
-): DurableEquipmentMutationResult {
-  return { applied: false, reason, snapshot: cloneSnapshot(snapshot) };
 }

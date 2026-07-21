@@ -26,3 +26,21 @@ A uniquely identified gameplay occurrence (e.g. a qualifying kill) that advances
 **Completion Id**:
 The deterministic identifier of one character completing one quest, making completion replay-safe. Required for every complete transition.
 _Avoid_: action id (combat's replay-dedup concept)
+
+### Equipment rules
+
+**Equipment Snapshot**:
+A character's current durable equipment state: character revision, appearance revision, appearance (rig/base/armor layer), inventory, and equipped items.
+
+**Equip Decision** / **Unequip Decision**:
+The result of judging a requested equip or unequip against an Equipment Snapshot: either it applies, yielding the next snapshot, or it is rejected with a reason (`stale_revision`, `item_not_owned`, `incompatible_item`, `requirements_not_met`, `already_equipped`, `not_equipped`). Never partially applies.
+
+**Equipment Rules Module**:
+The single decider (`decideEquip`/`decideUnequip`) that judges every Equip Decision and Unequip Decision. There is exactly one; persistence adapters apply its decision, never re-derive it.
+_Avoid_: equipment validation (historically implied per-adapter copies)
+
+**Equipment Rules Context**:
+The character facts a decision needs beyond the snapshot and the request — class id and level. Read from storage by the adapter, interpreted only by the Equipment Rules Module.
+
+**Requirements**:
+An item's equip gate (minimum level and/or required class), declared once on the item in the equipment catalog. Never re-derived or hardcoded by a persistence adapter.

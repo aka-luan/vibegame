@@ -8,7 +8,14 @@ import {
   GuestAccountRepository,
   migrateDatabase,
   sql,
+  type DurableEquipmentItem,
 } from "@gameish/database";
+
+import { PostgresEquipmentPersistence } from "../apps/server/src/equipment/persistence.js";
+import {
+  runEquipmentPersistenceContract,
+  type EquipmentPersistenceContractHarness,
+} from "../apps/server/src/equipment/persistence-contract.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ??
@@ -16,29 +23,18 @@ const databaseUrl =
 const database = connectDatabase(databaseUrl);
 const accountRepository = new GuestAccountRepository(database.db);
 const durableState = new DurableStateRepository(database.db);
+const equipmentPersistence = new PostgresEquipmentPersistence(durableState);
 const userId = `user:equipment-${randomUUID()}`;
 const characterId = `character:equipment-${randomUUID()}`;
 const now = new Date("2026-07-19T14:00:00.000Z");
 
-beforeAll(async () => {
-  await migrateDatabase(
-    database.db,
-    join(process.cwd(), "packages/database/migrations"),
-  );
-  await accountRepository.createGuestSession({
-    id: `session:${userId}`,
-    userId,
-    secretHash: `secret:${userId}`,
-    now,
-    expiresAt: new Date("2026-08-19T14:00:00.000Z"),
-    rotatedAt: now,
-  });
+async function createTestCharacter(id: string): Promise<void> {
   await accountRepository.createCharacter({
-    id: characterId,
+    id,
     userId,
-    name: "Equipment Ranger",
-    normalizedName: "equipment ranger",
-    creationRequestId: `create:${characterId}`,
+    name: `Equipment ${randomUUID().slice(0, 8)}`,
+    normalizedName: `equipment ${randomUUID()}`,
+    creationRequestId: `create:${id}`,
     now,
     contentVersion: "content:village_m1_v2",
     classId: "class:trailwarden",
@@ -56,76 +52,41 @@ beforeAll(async () => {
     logicalMapId: "map:village",
     entranceId: "village_square",
   });
+}
+
+beforeAll(async () => {
+  await migrateDatabase(
+    database.db,
+    join(process.cwd(), "packages/database/migrations"),
+  );
+  await accountRepository.createGuestSession({
+    id: `session:${userId}`,
+    userId,
+    secretHash: `secret:${userId}`,
+    now,
+    expiresAt: new Date("2026-08-19T14:00:00.000Z"),
+    rotatedAt: now,
+  });
+  await createTestCharacter(characterId);
 });
 
 describe("durable equipment mutations", () => {
-  it("requires ownership and persists a compatible replacement atomically", async () => {
-    const initial = await durableState.loadEquipment(characterId);
-    expect(initial).toMatchObject({
-      characterRevision: 0,
-      appearance: { armorLayerId: "tunic" },
-      equipment: [{ slot: "body", itemId: "item:trailwarden_tunic" }],
-    });
-
-    await expect(
-      durableState.equipItem({
-        characterId,
-        item: {
-          itemId: "item:unowned_armor",
-          slot: "body",
-          rigId: "rig:village_placeholder",
-          layerId: "tunic",
-          requirements: { minimumLevel: 1, classId: "class:trailwarden" },
-        },
-        expectedCharacterRevision: initial.characterRevision,
-        now,
-      }),
-    ).resolves.toMatchObject({ applied: false, reason: "item_not_owned" });
-
-    await durableState.grantReward(
-      {
-        grantId: `grant:${characterId}:replacement`,
-        characterId,
-        sourceId: "monster:test",
-        defeatSequence: 1,
-        itemId: "item:canopy_vest",
-        quantity: 1,
-      },
-      now,
-    );
-    const afterReward = await durableState.loadEquipment(characterId);
-    const replaced = await durableState.equipItem({
-      characterId,
-      item: {
-        itemId: "item:canopy_vest",
-        slot: "body",
-        rigId: "rig:village_placeholder",
-        layerId: "tunic",
-        requirements: { minimumLevel: 1, classId: "class:trailwarden" },
-      },
-      expectedCharacterRevision: afterReward.characterRevision,
-      now,
-    });
-    expect(replaced).toMatchObject({
-      applied: true,
-      snapshot: {
-        characterRevision: afterReward.characterRevision + 1,
-        appearance: { armorLayerId: "tunic" },
-        equipment: [{ slot: "body", itemId: "item:canopy_vest" }],
-      },
-    });
-  });
+  // Business rules (ownership, rig compatibility, level/class requirements,
+  // already-equipped/not-equipped, revision bookkeeping) are covered once
+  // for every EquipmentPersistence adapter by the shared contract below.
+  // What remains here is SQL-specific: row locking under concurrency and
+  // transactional rollback when a later write fails.
 
   it("allows only one concurrent mutation for a character revision", async () => {
-    const current = await durableState.loadEquipment(characterId);
+    const current = await equipmentPersistence.load(characterId);
     const results = await Promise.all([
-      durableState.unequipItem({
+      equipmentPersistence.unequipItem({
         characterId,
         slot: "body",
         expectedCharacterRevision: current.characterRevision,
         now,
       }),
-      durableState.unequipItem({
+      equipmentPersistence.unequipItem({
         characterId,
         slot: "body",
         expectedCharacterRevision: current.characterRevision,
@@ -139,89 +100,24 @@ describe("durable equipment mutations", () => {
       ),
     ).toHaveLength(1);
 
-    const afterReload = await durableState.loadEquipment(characterId);
+    const afterReload = await equipmentPersistence.load(characterId);
     expect(afterReload.appearance.armorLayerId).toBe("");
     expect(afterReload.equipment).toEqual([]);
   });
 
-  it("rejects incompatible equipment without changing the durable appearance", async () => {
-    await durableState.grantReward(
-      {
-        grantId: `grant:${characterId}:wrong-rig`,
-        characterId,
-        sourceId: "monster:test",
-        defeatSequence: 2,
-        itemId: "item:wrong_rig",
-        quantity: 1,
-      },
-      now,
-    );
-    const before = await durableState.loadEquipment(characterId);
-    const result = await durableState.equipItem({
-      characterId,
-      item: {
-        itemId: "item:wrong_rig",
-        slot: "body",
-        rigId: "rig:other",
-        layerId: "tunic",
-        requirements: { minimumLevel: 1, classId: "class:trailwarden" },
-      },
-      expectedCharacterRevision: before.characterRevision,
-      now,
-    });
-    expect(result).toMatchObject({
-      applied: false,
-      reason: "incompatible_item",
-    });
-    expect(await durableState.loadEquipment(characterId)).toMatchObject({
-      characterRevision: before.characterRevision,
-      appearance: before.appearance,
-      equipment: before.equipment,
-    });
-  });
-
-  it("rejects an owned item when its level or class requirements are not met", async () => {
-    await durableState.grantReward(
-      {
-        grantId: `grant:${characterId}:requirements`,
-        characterId,
-        sourceId: "monster:test",
-        defeatSequence: 3,
-        itemId: "item:level_locked_armor",
-        quantity: 1,
-      },
-      now,
-    );
-    const before = await durableState.loadEquipment(characterId);
-    await expect(
-      durableState.equipItem({
-        characterId,
-        item: {
-          itemId: "item:level_locked_armor",
-          slot: "body",
-          rigId: "rig:village_placeholder",
-          layerId: "tunic",
-          requirements: { minimumLevel: 99 },
-        },
-        expectedCharacterRevision: before.characterRevision,
-        now,
-      }),
-    ).resolves.toMatchObject({
-      applied: false,
-      reason: "requirements_not_met",
-      snapshot: { characterRevision: before.characterRevision },
-    });
-    await expect(
-      durableState.loadEquipment(characterId),
-    ).resolves.toMatchObject({
-      characterRevision: before.characterRevision,
-      appearance: before.appearance,
-      equipment: before.equipment,
-    });
-  });
-
   it("rolls back equipment and appearance when the appearance write fails", async () => {
-    const before = await durableState.loadEquipment(characterId);
+    await durableState.grantReward(
+      {
+        grantId: `grant:${characterId}:rollback`,
+        characterId,
+        sourceId: "monster:test",
+        defeatSequence: 1,
+        itemId: "item:trailwarden_tunic",
+        quantity: 1,
+      },
+      now,
+    );
+    const before = await equipmentPersistence.load(characterId);
     await database.db.execute(
       sql.raw(
         "CREATE FUNCTION gameish_test_fail_equipment_appearance() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced equipment failure'; END; $$",
@@ -234,7 +130,7 @@ describe("durable equipment mutations", () => {
     );
     try {
       await expect(
-        durableState.equipItem({
+        equipmentPersistence.equipItem({
           characterId,
           item: {
             itemId: "item:trailwarden_tunic",
@@ -260,10 +156,105 @@ describe("durable equipment mutations", () => {
         sql.raw("DROP FUNCTION gameish_test_fail_equipment_appearance()"),
       );
     }
-    await expect(durableState.loadEquipment(characterId)).resolves.toEqual(
+    await expect(equipmentPersistence.load(characterId)).resolves.toEqual(
       before,
     );
   });
+});
+
+runEquipmentPersistenceContract("postgres", async ({ level }) => {
+  const contractCharacterId = `character:equipment-persistence-contract-${randomUUID()}`;
+  await createTestCharacter(contractCharacterId);
+
+  const replacementItemId = "item:equipment_persistence_contract_replacement";
+  const wrongRigItemId = "item:equipment_persistence_contract_wrong_rig";
+  const levelLockedItemId = "item:equipment_persistence_contract_level_locked";
+
+  await durableState.grantReward(
+    {
+      grantId: `grant:${contractCharacterId}:replacement`,
+      characterId: contractCharacterId,
+      sourceId: "monster:test",
+      defeatSequence: 1,
+      itemId: replacementItemId,
+      quantity: 1,
+    },
+    now,
+  );
+  await durableState.grantReward(
+    {
+      grantId: `grant:${contractCharacterId}:wrong-rig`,
+      characterId: contractCharacterId,
+      sourceId: "monster:test",
+      defeatSequence: 2,
+      itemId: wrongRigItemId,
+      quantity: 1,
+    },
+    now,
+  );
+  await durableState.grantReward(
+    {
+      grantId: `grant:${contractCharacterId}:level-locked`,
+      characterId: contractCharacterId,
+      sourceId: "monster:test",
+      defeatSequence: 3,
+      itemId: levelLockedItemId,
+      quantity: 1,
+    },
+    now,
+  );
+  // Reward grants recompute level from experience, so the level override
+  // (a test-only shortcut standing in for real leveling) must come last.
+  await database.db.execute(
+    sql`update character_progression set level = ${level} where character_id = ${contractCharacterId}`,
+  );
+
+  const equippedItem: DurableEquipmentItem = {
+    itemId: "item:trailwarden_tunic",
+    slot: "body",
+    rigId: "rig:village_placeholder",
+    layerId: "tunic",
+    requirements: { minimumLevel: 1, classId: "class:trailwarden" },
+  };
+  const replacementItem: DurableEquipmentItem = {
+    itemId: replacementItemId,
+    slot: "body",
+    rigId: "rig:village_placeholder",
+    layerId: "vest",
+    requirements: {},
+  };
+  const unownedItem: DurableEquipmentItem = {
+    itemId: "item:equipment_persistence_contract_unowned",
+    slot: "body",
+    rigId: "rig:village_placeholder",
+    layerId: "vest",
+    requirements: {},
+  };
+  const wrongRigItem: DurableEquipmentItem = {
+    itemId: wrongRigItemId,
+    slot: "body",
+    rigId: "rig:equipment_persistence_contract_other",
+    layerId: "vest",
+    requirements: {},
+  };
+  const levelLockedItem: DurableEquipmentItem = {
+    itemId: levelLockedItemId,
+    slot: "body",
+    rigId: "rig:village_placeholder",
+    layerId: "vest",
+    requirements: { minimumLevel: 2 },
+  };
+
+  const harness: EquipmentPersistenceContractHarness = {
+    persistence: new PostgresEquipmentPersistence(durableState),
+    characterId: contractCharacterId,
+    equippedItem,
+    replacementItem,
+    unownedItem,
+    wrongRigItem,
+    levelLockedItem,
+  };
+  return harness;
 });
 
 afterAll(async () => {

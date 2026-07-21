@@ -122,6 +122,45 @@ export type DurableEquipmentMutationResult =
       snapshot: DurableEquipmentSnapshot;
     };
 
+/**
+ * The character facts an {@link EquipmentDecider} needs to judge item
+ * requirements. Read from storage by the persistence adapter and handed to
+ * the decider as opaque data — the decider interprets it, the adapter never
+ * does.
+ */
+export interface EquipmentRulesContext {
+  classId: string;
+  level: number;
+}
+
+export interface EquipItemRequest {
+  item: DurableEquipmentItem;
+  expectedCharacterRevision: number;
+}
+
+export interface UnequipItemRequest {
+  slot: DurableEquipmentSlot;
+  expectedCharacterRevision: number;
+}
+
+/**
+ * The single equip/unequip rules module. Every persistence adapter
+ * (Postgres, in-memory) applies its decision instead of re-deriving the
+ * invariant.
+ */
+export interface EquipmentDecider {
+  decideEquip: (
+    snapshot: DurableEquipmentSnapshot,
+    context: EquipmentRulesContext,
+    request: EquipItemRequest,
+  ) => DurableEquipmentMutationResult;
+  decideUnequip: (
+    snapshot: DurableEquipmentSnapshot,
+    context: EquipmentRulesContext,
+    request: UnequipItemRequest,
+  ) => DurableEquipmentMutationResult;
+}
+
 export interface DurableCharacterState {
   characterRevision: number;
   appearanceRevision: number;
@@ -256,6 +295,7 @@ export class DurableStateRepository {
     characterId: string;
     item: DurableEquipmentItem;
     expectedCharacterRevision: number;
+    decide: EquipmentDecider;
     now: Date;
   }): Promise<DurableEquipmentMutationResult> {
     return this.db.transaction(async (tx) => {
@@ -263,36 +303,13 @@ export class DurableStateRepository {
         tx,
         input.characterId,
       );
-      if (current.characterRevision !== input.expectedCharacterRevision) {
-        return equipmentRejected(current, "stale_revision");
-      }
-      const owned = current.inventory.find(
-        (entry) => entry.itemId === input.item.itemId,
-      );
-      if (!owned || owned.quantity <= 0) {
-        return equipmentRejected(current, "item_not_owned");
-      }
-      if (
-        input.item.rigId !== current.appearance.rigId ||
-        input.item.slot !== "body"
-      ) {
-        return equipmentRejected(current, "incompatible_item");
-      }
-      if (
-        !(await this.#meetsRequirements(
-          tx,
-          input.characterId,
-          input.item.requirements,
-        ))
-      ) {
-        return equipmentRejected(current, "requirements_not_met");
-      }
-      const existing = current.equipment.find(
-        (entry) => entry.slot === input.item.slot,
-      );
-      if (existing?.itemId === input.item.itemId) {
-        return equipmentRejected(current, "already_equipped");
-      }
+      const context = await this.#equipmentRulesContext(tx, input.characterId);
+      const result = input.decide.decideEquip(current, context, {
+        item: input.item,
+        expectedCharacterRevision: input.expectedCharacterRevision,
+      });
+      if (!result.applied) return result;
+
       await tx
         .insert(characterEquipment)
         .values({
@@ -331,6 +348,7 @@ export class DurableStateRepository {
     characterId: string;
     slot: DurableEquipmentSlot;
     expectedCharacterRevision: number;
+    decide: EquipmentDecider;
     now: Date;
   }): Promise<DurableEquipmentMutationResult> {
     return this.db.transaction(async (tx) => {
@@ -338,13 +356,13 @@ export class DurableStateRepository {
         tx,
         input.characterId,
       );
-      if (current.characterRevision !== input.expectedCharacterRevision) {
-        return equipmentRejected(current, "stale_revision");
-      }
-      const existing = current.equipment.find(
-        (entry) => entry.slot === input.slot,
-      );
-      if (!existing) return equipmentRejected(current, "not_equipped");
+      const context = await this.#equipmentRulesContext(tx, input.characterId);
+      const result = input.decide.decideUnequip(current, context, {
+        slot: input.slot,
+        expectedCharacterRevision: input.expectedCharacterRevision,
+      });
+      if (!result.applied) return result;
+
       await tx
         .delete(characterEquipment)
         .where(
@@ -623,11 +641,16 @@ export class DurableStateRepository {
     };
   }
 
-  async #meetsRequirements(
+  /**
+   * Reads the character facts an {@link EquipmentDecider} needs to judge
+   * item requirements. This is storage only — it does not interpret
+   * `classId`/`level` against any item's requirements; that judgment belongs
+   * entirely to the decider.
+   */
+  async #equipmentRulesContext(
     tx: GameTransaction,
     characterId: string,
-    requirements: DurableEquipmentRequirements,
-  ): Promise<boolean> {
+  ): Promise<EquipmentRulesContext> {
     const [character] = await tx
       .select({ classId: characterLoadouts.classId })
       .from(characterLoadouts)
@@ -638,17 +661,10 @@ export class DurableStateRepository {
       .from(characterProgression)
       .where(eq(characterProgression.characterId, characterId))
       .limit(1);
-    if (!character || !progression) return false;
-    if (
-      requirements.classId !== undefined &&
-      requirements.classId !== character.classId
-    ) {
-      return false;
+    if (!character || !progression) {
+      throw new Error("Character loadout/progression state is incomplete");
     }
-    return (
-      requirements.minimumLevel === undefined ||
-      progression.level >= requirements.minimumLevel
-    );
+    return { classId: character.classId, level: progression.level };
   }
 
   async #lockedQuest(
@@ -854,11 +870,4 @@ function parseConnectionState(
 function parseEquipmentSlot(state: string): DurableEquipmentSlot {
   if (state === "body") return state;
   throw new Error(`Invalid durable equipment slot: ${state}`);
-}
-
-function equipmentRejected(
-  snapshot: DurableEquipmentSnapshot,
-  reason: Extract<DurableEquipmentMutationResult, { applied: false }>["reason"],
-): DurableEquipmentMutationResult {
-  return { applied: false, reason, snapshot };
 }

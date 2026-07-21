@@ -35,6 +35,7 @@ import {
   InMemoryEquipmentPersistence,
   UnavailableEquipmentPersistence,
   type EquipmentPersistence,
+  type EquipmentSeed,
 } from "../equipment/persistence.js";
 import { MonsterLifecycle } from "../combat/monster-lifecycle.js";
 import { resolveAbility, resolveBasicAttack } from "../combat/resolver.js";
@@ -139,6 +140,38 @@ const INTERACTION_RATE_LIMIT_MS = 250;
 const DIALOGUE_ACTION_RATE_LIMIT_MS = 100;
 const MAX_DIALOGUE_MESSAGE_BYTES = 256;
 const MAX_EQUIPMENT_MESSAGE_BYTES = 256;
+
+const STARTING_CHARACTER_LEVEL = 1;
+
+const developmentStarterEquipmentItem = villageEquipment.items[0];
+if (!developmentStarterEquipmentItem) {
+  throw new Error("Village equipment catalog is missing a starter item");
+}
+const developmentStarterClass = villageCombat.classes[0];
+if (!developmentStarterClass) {
+  throw new Error("Village combat catalog is missing a starter class");
+}
+const developmentEquipmentSeed: EquipmentSeed = {
+  appearance: {
+    rigId: developmentStarterEquipmentItem.serverOnly.rigId,
+    baseLayerId: "base",
+    armorLayerId: developmentStarterEquipmentItem.clientVisible.layerId,
+  },
+  inventory: [{ itemId: developmentStarterEquipmentItem.id, quantity: 1 }],
+  equipment: [
+    {
+      slot: developmentStarterEquipmentItem.slot,
+      itemId: developmentStarterEquipmentItem.id,
+    },
+  ],
+  context: {
+    classId: developmentStarterClass.id,
+    // Matches the level a freshly created character starts at
+    // (`guest-account.ts`); never derived from the item being judged, so a
+    // requirement the production path would reject is rejected here too.
+    level: STARTING_CHARACTER_LEVEL,
+  },
+};
 
 class PublicAppearance extends Schema {
   @type("string")
@@ -268,7 +301,7 @@ export function createVillageRoom(
     readonly #equipmentPersistence =
       options.equipmentPersistence ?? new UnavailableEquipmentPersistence();
     readonly #developmentEquipmentPersistence =
-      new InMemoryEquipmentPersistence();
+      new InMemoryEquipmentPersistence(developmentEquipmentSeed);
     readonly #developmentEquipmentEnabled =
       options.developmentEquipmentEnabled ?? false;
     readonly #logEquipmentPersistenceFailure =
