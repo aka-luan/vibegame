@@ -185,7 +185,7 @@ class VillageState extends Schema {
  * or retyped on the schema classes without a matching protocol update, this
  * fails to compile.
  */
-type AssertConforms<T extends U, U = T> = T;
+type AssertConforms<T extends U, U> = T;
 
 export type PublicAppearanceConformance = AssertConforms<
   PublicAppearance,
