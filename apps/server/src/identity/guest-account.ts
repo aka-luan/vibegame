@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
+import { villageSlice } from "@gameish/content/slices/village";
 import type {
   AccountCharacter,
   CharacterCreationInput,
@@ -12,8 +13,6 @@ export const GUEST_COOKIE_NAME = "gameish_guest";
 export const GUEST_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 export const GUEST_SESSION_ROTATION_MS = 24 * 60 * 60 * 1_000;
 export const PLAY_TICKET_TTL_MS = 15_000;
-export const VILLAGE_CONTENT_VERSION = "content:village_m1_v2" as const;
-export const VILLAGE_DESTINATION = "map:village" as const;
 
 export interface AccountRepository {
   createGuestSession(input: {
@@ -202,7 +201,7 @@ export class GuestAccountService {
       normalizedName: normalizeCharacterName(input.name),
       creationRequestId: input.requestId,
       now: new Date(this.#now()),
-      contentVersion: VILLAGE_CONTENT_VERSION,
+      contentVersion: villageSlice.contentVersion,
       classId: combatClass.id,
       basicAttackId: combatClass.serverOnly.basicAttackId,
       abilityIds: [
@@ -211,12 +210,12 @@ export class GuestAccountService {
         abilityIds[2]!,
         abilityIds[3]!,
       ],
-      starterEquipmentItemId: "item:trailwarden_tunic",
-      rigId: "rig:village_placeholder",
+      starterEquipmentItemId: villageSlice.starterItemId,
+      rigId: villageSlice.rigId,
       baseLayerId: "base",
       armorLayerId: "tunic",
-      logicalMapId: VILLAGE_DESTINATION,
-      entranceId: "village_square",
+      logicalMapId: villageSlice.mapId,
+      entranceId: villageSlice.entranceId,
     });
   }
 
@@ -246,8 +245,8 @@ export class GuestAccountService {
       tokenHash: hashSecret(ticket),
       userId: session.userId,
       characterId: selectedCharacterId,
-      logicalDestination: VILLAGE_DESTINATION,
-      contentVersion: VILLAGE_CONTENT_VERSION,
+      logicalDestination: villageSlice.mapId,
+      contentVersion: villageSlice.contentVersion,
       nonce: randomUUID(),
       now: new Date(nowMs),
       expiresAt: new Date(expiresAt),
@@ -296,7 +295,9 @@ export class GuestAccountService {
 
 import villageCombat from "@gameish/content/village-combat-server";
 
-const villageClass = villageCombat.classes[0]!;
+const villageClass = villageCombat.classes.find(
+  (combatClass) => combatClass.id === villageSlice.classId,
+)!;
 
 export function guestCookieForTesting(secret: string): string {
   return makeCookie(secret);
