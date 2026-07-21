@@ -9,7 +9,7 @@ import type {
   DurableCharacterState,
   LocationCheckpointInput,
 } from "@gameish/database";
-import type { CombatCatalog, CombatEffect } from "@gameish/content/combat";
+import type { CombatCatalog } from "@gameish/content/combat";
 import type { DialogueQuestAction } from "@gameish/content/dialogue";
 import {
   CLIENT_MESSAGES,
@@ -17,8 +17,6 @@ import {
   SERVER_MESSAGES,
   type AuthoritativeMovementSnapshot,
   type CombatResult,
-  type CombatStateMessage,
-  type CombatEffectFeedback,
   type MovementIntention,
   type PublicAppearance as PublicAppearanceState,
   type PublicMonsterState,
@@ -31,14 +29,16 @@ import { moveCharacterFoot, PLAYER_MOVEMENT } from "@gameish/world";
 import { z } from "zod";
 
 import type { PlayTicketConsumer } from "../identity/play-tickets.js";
-import { MonsterLifecycle } from "../combat/monster-lifecycle.js";
-import { resolveAbility, resolveBasicAttack } from "../combat/resolver.js";
 import {
-  applyCombatStatus,
-  combatControlState,
-  expireCombatStatuses,
-  type ActiveCombatStatus,
-} from "../combat/status.js";
+  applyMonsterEffectsToPlayer,
+  buildCombatStateMessage,
+  resolveCombatAction,
+  type CombatActionOutcome,
+  type CombatActionState,
+  type PlayerCombatState,
+} from "../combat/action.js";
+import { MonsterLifecycle } from "../combat/monster-lifecycle.js";
+import { expireCombatStatuses, combatControlState } from "../combat/status.js";
 import { rewardGrantId } from "../rewards/grants.js";
 import { rollPersonalLoot } from "../rewards/loot.js";
 import {
@@ -74,22 +74,6 @@ const movementIntentionSchema = z
   .refine((intention) => Math.hypot(intention.x, intention.y) <= 1, {
     message: "Movement direction exceeds normalized speed",
   });
-const targetSelectionSchema = z
-  .object({ targetEntityId: z.string().trim().min(1).max(80) })
-  .strict();
-const basicAttackSchema = z
-  .object({
-    actionId: z.string().trim().min(1).max(64),
-    targetEntityId: z.string().trim().min(1).max(80),
-  })
-  .strict();
-const abilitySchema = z
-  .object({
-    actionId: z.string().trim().min(1).max(64),
-    abilityId: z.string().trim().min(1).max(80),
-    targetEntityId: z.string().trim().min(1).max(80),
-  })
-  .strict();
 const interactionSchema = z
   .object({
     actionId: z.string().trim().min(1).max(64),
@@ -109,8 +93,6 @@ const dialogueCloseSchema = z
   .strict();
 
 const MAX_MOVEMENT_MESSAGE_BYTES = 256;
-const MAX_COMBAT_MESSAGE_BYTES = 256;
-const TARGET_SELECTION_RATE_LIMIT_MS = 100;
 const MAX_INTENTION_VIOLATIONS = 5;
 const MAX_PENDING_INTENTIONS = 120;
 const REWARD_PROXIMITY_RADIUS = 180;
@@ -211,19 +193,6 @@ export type {
   PublicMonster,
   VillageState,
 };
-
-interface PlayerCombatState {
-  targetEntityId: string | null;
-  resource: number;
-  health: number;
-  cooldownEndsAtMs: number;
-  lastActionAtMs: number | undefined;
-  lastTargetSelectionAtMs: number | undefined;
-  cooldowns: Map<string, number>;
-  movementLockedUntilMs: number;
-  statuses: Map<string, ActiveCombatStatus>;
-  recentActionIds: string[];
-}
 
 const MAX_PLAYER_HEALTH = 100;
 
@@ -353,174 +322,37 @@ export function createVillageRoom(
       this.onMessage(
         CLIENT_MESSAGES.targetSelection,
         (client, unsafeSelection: unknown) => {
-          const encodedSelection = JSON.stringify(unsafeSelection);
-          const selection = targetSelectionSchema.safeParse(unsafeSelection);
-          const combat = this.#playerCombat.get(client.sessionId);
-          if (
-            encodedSelection === undefined ||
-            Buffer.byteLength(encodedSelection) > MAX_COMBAT_MESSAGE_BYTES ||
-            !selection.success ||
-            !combat
-          ) {
-            this.#rejectCombat(client, ERROR_CODES.invalidTargetSelection);
-            return;
-          }
-          const target = this.#monsterLifecycle.state;
-          if (combat.health <= 0) {
-            this.#rejectCombat(client, ERROR_CODES.invalidCombatState);
-            return;
-          }
-          if (
-            selection.data.targetEntityId !== target.entityId ||
-            target.state === "defeated"
-          ) {
-            this.#rejectCombat(client, ERROR_CODES.targetNotFound);
-            return;
-          }
-          const player = this.state.players.get(client.sessionId);
-          if (
-            !player ||
-            Math.hypot(player.x - target.x, player.y - target.y) >
-              (this.#combatCatalog.monsters[0]?.serverOnly.aggroRange ?? 0)
-          ) {
-            this.#rejectCombat(client, ERROR_CODES.targetOutOfRange);
-            return;
-          }
-          if (
-            combat.lastTargetSelectionAtMs !== undefined &&
-            this.state.serverTimeMs <
-              combat.lastTargetSelectionAtMs + TARGET_SELECTION_RATE_LIMIT_MS
-          ) {
-            this.#rejectCombat(client, ERROR_CODES.actionRateLimited);
-            return;
-          }
-          combat.lastTargetSelectionAtMs = this.state.serverTimeMs;
-          combat.targetEntityId = target.entityId;
-          client.send(SERVER_MESSAGES.targetSelected, {
-            targetEntityId: target.entityId,
-          });
+          this.#applyCombatOutcome(
+            client,
+            resolveCombatAction(this.#combatActionState(client), {
+              type: "targetSelection",
+              raw: unsafeSelection,
+            }),
+          );
         },
       );
       this.onMessage(
         CLIENT_MESSAGES.basicAttack,
         (client, unsafeIntention: unknown) => {
-          const encodedIntention = JSON.stringify(unsafeIntention);
-          const intention = basicAttackSchema.safeParse(unsafeIntention);
-          const combat = this.#playerCombat.get(client.sessionId);
-          if (
-            encodedIntention === undefined ||
-            Buffer.byteLength(encodedIntention) > MAX_COMBAT_MESSAGE_BYTES ||
-            !intention.success ||
-            !combat
-          ) {
-            this.#sendCombatResult(client, {
-              accepted: false,
-              actionId: intention.success ? intention.data.actionId : "invalid",
-              code: ERROR_CODES.invalidCombatIntention,
-            });
-            return;
-          }
-
-          const target = this.#monsterLifecycle.state;
-          if (combat.targetEntityId === null) {
-            this.#sendCombatResult(client, {
-              accepted: false,
-              actionId: intention.data.actionId,
-              code: ERROR_CODES.targetNotSelected,
-            });
-            return;
-          }
-          if (
-            intention.data.targetEntityId !== combat.targetEntityId ||
-            intention.data.targetEntityId !== target.entityId
-          ) {
-            this.#sendCombatResult(client, {
-              accepted: false,
-              actionId: intention.data.actionId,
-              code: ERROR_CODES.targetNotFound,
-            });
-            return;
-          }
-
-          const classDefinition = this.#combatCatalog.classes[0];
-          const attackId = classDefinition?.serverOnly.basicAttackId;
-          const attack = this.#combatCatalog.attacks.find(
-            (candidate) => candidate.id === attackId,
+          this.#applyCombatOutcome(
+            client,
+            resolveCombatAction(this.#combatActionState(client), {
+              type: "basicAttack",
+              raw: unsafeIntention,
+            }),
           );
-          if (!classDefinition || !attack) {
-            this.#sendCombatResult(client, {
-              accepted: false,
-              actionId: intention.data.actionId,
-              code: ERROR_CODES.invalidCombatState,
-            });
-            return;
-          }
-          const player = this.state.players.get(client.sessionId);
-          if (!player) return;
-          const resolution = resolveBasicAttack({
-            nowMs: this.state.serverTimeMs,
-            lastActionAtMs: combat.lastActionAtMs,
-            cooldownEndsAtMs: combat.cooldownEndsAtMs,
-            attacker: {
-              x: player.x,
-              y: player.y,
-              resource: combat.resource,
-              defeated: combat.health <= 0,
-            },
-            target: {
-              x: target.x,
-              y: target.y,
-              health: target.health,
-              maxHealth: target.maxHealth,
-              defeated: target.state === "defeated",
-            },
-            attack,
-          });
-          if (!resolution.accepted) {
-            this.#sendCombatResult(client, {
-              accepted: false,
-              actionId: intention.data.actionId,
-              code: resolution.code,
-            });
-            return;
-          }
-
-          this.#recordParticipation(client);
-          combat.resource = resolution.remainingResource;
-          combat.cooldownEndsAtMs = resolution.cooldownEndsAtMs;
-          combat.cooldowns.set(attack.id, resolution.cooldownEndsAtMs);
-          combat.lastActionAtMs = this.state.serverTimeMs;
-          const lifecycleResult = this.#monsterLifecycle.applyDamage(
-            resolution.damage,
-            this.state.serverTimeMs,
-          );
-          this.#syncPublicMonster();
-          const defeated = lifecycleResult.type === "defeated";
-          this.broadcast(SERVER_MESSAGES.combatEvent, {
-            kind: defeated ? "defeated" : "hit",
-            entityId: target.entityId,
-            healthFraction: this.#monsterHealthFraction(),
-          });
-          this.#sendCombatResult(client, {
-            accepted: true,
-            actionId: intention.data.actionId,
-            targetEntityId: target.entityId,
-            damage: resolution.damage,
-            remainingResource: combat.resource,
-            cooldownEndsAtMs: combat.cooldownEndsAtMs,
-            defeated,
-          });
-          this.#sendCombatState(client);
-          if (defeated) {
-            combat.targetEntityId = null;
-            this.#completeMonsterDefeat(target.entityId);
-          }
         },
       );
       this.onMessage(
         CLIENT_MESSAGES.ability,
         (client, unsafeIntention: unknown) => {
-          this.#handleAbility(client, unsafeIntention);
+          this.#applyCombatOutcome(
+            client,
+            resolveCombatAction(this.#combatActionState(client), {
+              type: "ability",
+              raw: unsafeIntention,
+            }),
+          );
         },
       );
       this.onMessage(
@@ -853,187 +685,43 @@ export function createVillageRoom(
       client.send(SERVER_MESSAGES.questRejected, { code });
     }
 
-    #handleAbility(client: Client, unsafeIntention: unknown): void {
-      const encodedIntention = JSON.stringify(unsafeIntention);
-      const intention = abilitySchema.safeParse(unsafeIntention);
-      const combat = this.#playerCombat.get(client.sessionId);
-      if (
-        encodedIntention === undefined ||
-        Buffer.byteLength(encodedIntention) > MAX_COMBAT_MESSAGE_BYTES ||
-        !intention.success ||
-        !combat
-      ) {
-        this.#sendCombatResult(client, {
-          accepted: false,
-          actionId: intention.success ? intention.data.actionId : "invalid",
-          code: ERROR_CODES.invalidCombatIntention,
-        });
-        return;
-      }
-      if (combat.recentActionIds.includes(intention.data.actionId)) {
-        this.#sendCombatResult(client, {
-          accepted: false,
-          actionId: intention.data.actionId,
-          code: ERROR_CODES.staleAction,
-        });
-        return;
-      }
-      combat.recentActionIds.push(intention.data.actionId);
-      if (combat.recentActionIds.length > 64) combat.recentActionIds.shift();
-
-      const classDefinition = this.#combatCatalog.classes[0];
-      const ability = this.#combatCatalog.abilities.find(
-        (candidate) =>
-          candidate.id === intention.data.abilityId &&
-          classDefinition?.serverOnly.abilityIds.includes(candidate.id),
-      );
-      if (!classDefinition || !ability) {
-        this.#sendCombatResult(client, {
-          accepted: false,
-          actionId: intention.data.actionId,
-          code: ERROR_CODES.abilityNotFound,
-        });
-        return;
-      }
-      if (combat.targetEntityId === null) {
-        this.#sendCombatResult(client, {
-          accepted: false,
-          actionId: intention.data.actionId,
-          code: ERROR_CODES.targetNotSelected,
-        });
-        return;
-      }
-      const target = this.#monsterLifecycle.state;
-      if (
-        intention.data.targetEntityId !== combat.targetEntityId ||
-        intention.data.targetEntityId !== target.entityId
-      ) {
-        this.#sendCombatResult(client, {
-          accepted: false,
-          actionId: intention.data.actionId,
-          code: ERROR_CODES.targetNotFound,
-        });
-        return;
-      }
-      const player = this.state.players.get(client.sessionId);
-      if (!player) return;
-      const cooldownEndsAtMs = combat.cooldowns.get(ability.id) ?? 0;
-      const resolution = resolveAbility({
+    #combatActionState(client: Client): CombatActionState {
+      return {
         nowMs: this.state.serverTimeMs,
-        lastActionAtMs: combat.lastActionAtMs,
-        cooldownEndsAtMs,
-        attacker: {
-          x: player.x,
-          y: player.y,
-          resource: combat.resource,
-          defeated: combat.health <= 0,
-        },
-        target: {
-          x: target.x,
-          y: target.y,
-          health: target.health,
-          maxHealth: target.maxHealth,
-          defeated: target.state === "defeated",
-        },
-        ability,
-      });
-      if (!resolution.accepted) {
-        this.#sendCombatResult(client, {
-          accepted: false,
-          actionId: intention.data.actionId,
-          code: resolution.code,
-        });
-        return;
-      }
+        catalog: this.#combatCatalog,
+        monster: this.#monsterLifecycle,
+        player: this.state.players.get(client.sessionId),
+        combat: this.#playerCombat.get(client.sessionId),
+      };
+    }
 
-      this.#recordParticipation(client);
-      combat.resource = resolution.remainingResource;
-      combat.cooldowns.set(ability.id, resolution.cooldownEndsAtMs);
-      combat.lastActionAtMs = this.state.serverTimeMs;
-      combat.movementLockedUntilMs = Math.max(
-        combat.movementLockedUntilMs,
-        resolution.movementLockedUntilMs,
-      );
-      const feedback: CombatEffectFeedback[] = [];
-      let interrupted = false;
-      for (const effect of resolution.effects) {
-        if (effect.kind === "damage") {
-          feedback.push({ kind: "damage", amount: effect.amount });
-        } else if (effect.kind === "apply_status") {
-          const definition = this.#combatCatalog.statuses.find(
-            (candidate) => candidate.id === effect.statusId,
-          );
-          if (!definition) continue;
-          const status =
-            effect.target === "self"
-              ? applyCombatStatus(
-                  combat.statuses,
-                  definition,
-                  this.state.serverTimeMs,
-                )
-              : this.#monsterLifecycle.applyStatus(
-                  definition,
-                  this.state.serverTimeMs,
-                );
-          feedback.push({
-            kind: "status",
-            statusId: status.statusId,
-            durationMs: status.expiresAtMs - this.state.serverTimeMs,
+    #applyCombatOutcome(client: Client, outcome: CombatActionOutcome): void {
+      switch (outcome.type) {
+        case "ignored":
+          return;
+        case "rejected":
+          this.#rejectCombat(client, outcome.code);
+          return;
+        case "result":
+          this.#sendCombatResult(client, outcome.result);
+          return;
+        case "targetSelected":
+          client.send(SERVER_MESSAGES.targetSelected, {
+            targetEntityId: outcome.targetEntityId,
           });
-        } else if (effect.kind === "restore_resource") {
-          const previous = combat.resource;
-          combat.resource = Math.min(
-            classDefinition.serverOnly.maximumResource,
-            combat.resource + effect.amount,
-          );
-          feedback.push({
-            kind: "resource",
-            amount: combat.resource - previous,
-          });
-        } else if (effect.kind === "interrupt") {
-          if (
-            this.#monsterLifecycle.interrupt(this.state.serverTimeMs).type ===
-            "interrupted"
-          ) {
-            interrupted = true;
-            feedback.push({ kind: "interrupt" });
+          return;
+        case "resolved":
+          if (outcome.recordParticipation) this.#recordParticipation(client);
+          this.#syncPublicMonster();
+          for (const broadcast of outcome.broadcasts) {
+            this.broadcast(SERVER_MESSAGES.combatEvent, broadcast);
           }
-        }
-      }
-      const lifecycleResult = this.#monsterLifecycle.applyDamage(
-        resolution.damage,
-        this.state.serverTimeMs,
-      );
-      this.#syncPublicMonster();
-      const defeated = lifecycleResult.type === "defeated";
-      this.broadcast(SERVER_MESSAGES.combatEvent, {
-        kind: defeated ? "defeated" : "hit",
-        entityId: target.entityId,
-        healthFraction: this.#monsterHealthFraction(),
-      });
-      if (interrupted) {
-        this.broadcast(SERVER_MESSAGES.combatEvent, {
-          kind: "interrupted",
-          entityId: target.entityId,
-        });
-      }
-      this.#sendCombatResult(client, {
-        accepted: true,
-        actionId: intention.data.actionId,
-        targetEntityId: target.entityId,
-        damage: resolution.damage,
-        remainingResource: combat.resource,
-        cooldownEndsAtMs: resolution.cooldownEndsAtMs,
-        defeated,
-        abilityId: ability.id,
-        slot: ability.slot,
-        effects: feedback,
-        movementLockedUntilMs: resolution.movementLockedUntilMs,
-      });
-      this.#sendCombatState(client);
-      if (defeated) {
-        combat.targetEntityId = null;
-        this.#completeMonsterDefeat(target.entityId);
+          this.#sendCombatResult(client, outcome.result);
+          this.#sendCombatState(client);
+          if (outcome.monsterDefeated) {
+            this.#completeMonsterDefeat(outcome.defeatedEntityId);
+          }
+          return;
       }
     }
 
@@ -1082,7 +770,10 @@ export function createVillageRoom(
         questStatuses: new Map([[questSnapshot.questId, questSnapshot.status]]),
       });
       this.#joinedAtMs.set(client.sessionId, this.state.serverTimeMs);
-      this.#lastActivityAtMs.delete(consumption.admission.characterId);
+      this.#lastActivityAtMs.set(
+        consumption.admission.characterId,
+        this.state.serverTimeMs,
+      );
       this.#pendingIntentions.set(client.sessionId, new Map());
       this.#lastProcessedSequences.set(client.sessionId, 0);
       this.#intentionViolations.set(client.sessionId, 0);
@@ -1250,7 +941,12 @@ export function createVillageRoom(
             monster.serverOnly.attackDamage;
           combat.health = Math.max(0, combat.health - damage);
           if (action)
-            this.#applyEffectsToPlayer(combat, action.serverOnly.effects);
+            applyMonsterEffectsToPlayer(
+              combat,
+              action.serverOnly.effects,
+              this.#combatCatalog,
+              this.state.serverTimeMs,
+            );
           this.broadcast(SERVER_MESSAGES.combatEvent, {
             kind: "attack",
             entityId: this.#monsterLifecycle.state.entityId,
@@ -1307,27 +1003,6 @@ export function createVillageRoom(
       }).catch(() => undefined);
     }
 
-    #applyEffectsToPlayer(
-      combat: PlayerCombatState,
-      effects: readonly CombatEffect[],
-    ): void {
-      for (const effect of effects) {
-        if (effect.kind !== "apply_status" || effect.target !== "target") {
-          continue;
-        }
-        const definition = this.#combatCatalog.statuses.find(
-          (candidate) => candidate.id === effect.statusId,
-        );
-        if (definition) {
-          applyCombatStatus(
-            combat.statuses,
-            definition,
-            this.state.serverTimeMs,
-          );
-        }
-      }
-    }
-
     #sendCombatStateBySessionId(sessionId: string): void {
       const client = this.clients.find(
         (candidate) => candidate.sessionId === sessionId,
@@ -1337,24 +1012,13 @@ export function createVillageRoom(
 
     #sendCombatState(client: Client): void {
       const combat = this.#playerCombat.get(client.sessionId);
-      const classDefinition = this.#combatCatalog.classes[0];
-      if (!combat || !classDefinition) return;
-      const cooldowns: Record<string, number> = {};
-      for (const [actionId, endsAtMs] of combat.cooldowns) {
-        if (endsAtMs > this.state.serverTimeMs) cooldowns[actionId] = endsAtMs;
-      }
-      const message: CombatStateMessage = {
-        serverTimeMs: this.state.serverTimeMs,
-        resource: combat.resource,
-        maximumResource: classDefinition.serverOnly.maximumResource,
-        cooldowns,
-        movementLockedUntilMs: combat.movementLockedUntilMs,
-        controlState:
-          combat.movementLockedUntilMs > this.state.serverTimeMs
-            ? "casting"
-            : combatControlState(combat.statuses, this.#combatCatalog.statuses),
-        statuses: [...combat.statuses.keys()],
-      };
+      if (!combat) return;
+      const message = buildCombatStateMessage(
+        combat,
+        this.#combatCatalog,
+        this.state.serverTimeMs,
+      );
+      if (!message) return;
       client.send(SERVER_MESSAGES.combatState, message);
     }
 
@@ -1399,7 +1063,8 @@ export function createVillageRoom(
           joinedAtMs:
             this.#joinedAtMs.get(sessionId) ?? Number.MAX_SAFE_INTEGER,
           lastActivityAtMs:
-            this.#lastActivityAtMs.get(identity.characterId) ?? 0,
+            this.#lastActivityAtMs.get(identity.characterId) ??
+            this.state.serverTimeMs,
         });
       }
       const eligibleCharacters = this.#participationWindow.eligibleCharacters({
