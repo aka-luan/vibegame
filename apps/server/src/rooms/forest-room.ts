@@ -114,6 +114,8 @@ export type ForestStateConformance = AssertConforms<
 
 export type { AssertConforms, PublicAppearance, PublicPlayer, ForestState };
 
+const DEFAULT_CHECKPOINT_TIMEOUT_MS = 1_000;
+
 /**
  * The forest room: traversable-only for this issue (no combat, no
  * dialogue, no quests, no monsters — see issue #13 non-goals). Movement,
@@ -130,6 +132,13 @@ export function createForestRoom(
     hardCapacity?: number;
     checkpointLocation?:
       ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
+    checkpointTimeoutMs?: number;
+    recordCheckpointTimeout?: (details: {
+      logicalMapId: string;
+      sessionId: string;
+      connectionState: LocationCheckpointInput["connectionState"];
+      timeoutMs: number;
+    }) => void;
     recordLifecycle?: (
       event: "disconnected" | "reconnected" | "removed",
     ) => void;
@@ -167,6 +176,10 @@ export function createForestRoom(
     readonly #lastProcessedSequences = new Map<string, number>();
     readonly #now = options.now ?? Date.now;
     readonly #reconnectGraceSeconds = options.reconnectGraceSeconds ?? 5;
+    readonly #checkpointTimeoutMs = Math.min(
+      options.checkpointTimeoutMs ?? DEFAULT_CHECKPOINT_TIMEOUT_MS,
+      Math.max(1, this.#reconnectGraceSeconds * 1_000),
+    );
     readonly #checkpointLocation = options.checkpointLocation;
     readonly #mapChatEnabled = options.mapChatEnabled ?? false;
     readonly #mapChatRateLimiter =
@@ -490,7 +503,8 @@ export function createForestRoom(
       if (!player || !identity || !spawn) return false;
       this.#lastCheckpointAtMs.set(sessionId, this.state.serverTimeMs);
       try {
-        return await this.#checkpointLocation({
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const checkpoint = this.#checkpointLocation({
           characterId: identity.characterId,
           logicalMapId: forestSlice.mapId,
           entranceId,
@@ -499,6 +513,22 @@ export function createForestRoom(
           connectionState,
           now: new Date(this.state.serverTimeMs),
         });
+        const bounded = new Promise<boolean>((resolve) => {
+          timeout = setTimeout(() => {
+            options.recordCheckpointTimeout?.({
+              logicalMapId: forestSlice.mapId,
+              sessionId,
+              connectionState,
+              timeoutMs: this.#checkpointTimeoutMs,
+            });
+            resolve(false);
+          }, this.#checkpointTimeoutMs);
+        });
+        try {
+          return await Promise.race([checkpoint, bounded]);
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout);
+        }
       } catch {
         return false;
       }

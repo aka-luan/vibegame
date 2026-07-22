@@ -269,6 +269,7 @@ export type {
 };
 
 const MAX_PLAYER_HEALTH = 100;
+const DEFAULT_CHECKPOINT_TIMEOUT_MS = 1_000;
 
 export function createVillageRoom(
   playTickets: PlayTicketConsumer,
@@ -299,6 +300,13 @@ export function createVillageRoom(
     }) => void;
     checkpointLocation?:
       ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
+    checkpointTimeoutMs?: number;
+    recordCheckpointTimeout?: (details: {
+      logicalMapId: string;
+      sessionId: string;
+      connectionState: LocationCheckpointInput["connectionState"];
+      timeoutMs: number;
+    }) => void;
     recordLifecycle?: (
       event: "disconnected" | "reconnected" | "removed",
     ) => void;
@@ -327,6 +335,10 @@ export function createVillageRoom(
     readonly #lastProcessedSequences = new Map<string, number>();
     readonly #now = options.now ?? Date.now;
     readonly #reconnectGraceSeconds = options.reconnectGraceSeconds ?? 5;
+    readonly #checkpointTimeoutMs = Math.min(
+      options.checkpointTimeoutMs ?? DEFAULT_CHECKPOINT_TIMEOUT_MS,
+      Math.max(1, this.#reconnectGraceSeconds * 1_000),
+    );
     readonly #combatCatalog = options.combatCatalog ?? villageCombat;
     readonly #rng = options.rng ?? Math.random;
     readonly #rewardRng = options.rewardRng ?? options.rng ?? Math.random;
@@ -1524,7 +1536,8 @@ export function createVillageRoom(
       if (!player || !identity || !spawn) return false;
       this.#lastCheckpointAtMs.set(sessionId, this.state.serverTimeMs);
       try {
-        return await this.#checkpointLocation({
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const checkpoint = this.#checkpointLocation({
           characterId: identity.characterId,
           logicalMapId: villageSlice.mapId,
           entranceId,
@@ -1533,6 +1546,22 @@ export function createVillageRoom(
           connectionState,
           now: new Date(this.state.serverTimeMs),
         });
+        const bounded = new Promise<boolean>((resolve) => {
+          timeout = setTimeout(() => {
+            options.recordCheckpointTimeout?.({
+              logicalMapId: villageSlice.mapId,
+              sessionId,
+              connectionState,
+              timeoutMs: this.#checkpointTimeoutMs,
+            });
+            resolve(false);
+          }, this.#checkpointTimeoutMs);
+        });
+        try {
+          return await Promise.race([checkpoint, bounded]);
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout);
+        }
       } catch {
         return false;
       }

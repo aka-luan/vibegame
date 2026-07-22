@@ -1,6 +1,7 @@
 import { Client, type Room } from "@colyseus/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { LocationCheckpointInput } from "../packages/database/src/index.js";
 import {
   startFoundationServer,
   type RunningFoundationServer,
@@ -27,6 +28,14 @@ async function startPlacementServer(options?: {
   softPopulationTarget?: number;
   hardCapacity?: number;
   inspect?: boolean;
+  checkpointLocation?: (input: LocationCheckpointInput) => Promise<boolean>;
+  checkpointTimeoutMs?: number;
+  recordCheckpointTimeout?: (details: {
+    logicalMapId: string;
+    sessionId: string;
+    connectionState: LocationCheckpointInput["connectionState"];
+    timeoutMs: number;
+  }) => void;
 }) {
   runningServer = await startFoundationServer({
     host: "127.0.0.1",
@@ -38,6 +47,9 @@ async function startPlacementServer(options?: {
     runtimeEnvironment: "test",
     softPopulationTarget: options?.softPopulationTarget,
     hardCapacity: options?.hardCapacity,
+    checkpointLocation: options?.checkpointLocation,
+    checkpointTimeoutMs: options?.checkpointTimeoutMs,
+    recordCheckpointTimeout: options?.recordCheckpointTimeout,
   });
   return `http://127.0.0.1:${String(runningServer.port)}`;
 }
@@ -140,6 +152,57 @@ describe("headless map-instance placement", () => {
       ),
     ).toBe(true);
     expect(new Set(rooms.map((room) => room.roomId)).size).toBeGreaterThan(1);
+  });
+
+  it("rejects a client-selected map instance id", async () => {
+    const endpoint = await startPlacementServer({
+      softPopulationTarget: 1,
+      hardCapacity: 2,
+    });
+    const first = await joinVillage(endpoint, "First Protected Ranger");
+    const { ticket } = await issueTicket(endpoint, "Blocked Selector");
+
+    await expect(
+      new Client(endpoint).joinById(first.roomId, { ticket }),
+    ).rejects.toThrow();
+
+    const diagnostics = await inspect(endpoint);
+    expect(diagnostics.instances).toHaveLength(1);
+    expect(diagnostics.instances[0]?.roomId).toBe(first.roomId);
+    expect(diagnostics.instances[0]?.clients).toBe(1);
+  });
+
+  it("bounds a hung final checkpoint so a room can release its seat", async () => {
+    const timeoutEvents: {
+      connectionState: LocationCheckpointInput["connectionState"];
+      timeoutMs: number;
+    }[] = [];
+    const endpoint = await startPlacementServer({
+      checkpointLocation: () => new Promise<boolean>(() => undefined),
+      checkpointTimeoutMs: 20,
+      recordCheckpointTimeout: (details) => {
+        timeoutEvents.push({
+          connectionState: details.connectionState,
+          timeoutMs: details.timeoutMs,
+        });
+      },
+    });
+    const room = await joinVillage(endpoint, "Checkpoint Timeout Ranger");
+    const startedAt = Date.now();
+
+    await room.leave();
+    joinedRooms.splice(joinedRooms.indexOf(room), 1);
+
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    await vi.waitFor(() => {
+      expect(timeoutEvents).toContainEqual({
+        connectionState: "offline",
+        timeoutMs: 20,
+      });
+    });
+    await vi.waitFor(async () => {
+      expect((await inspect(endpoint)).instances).toHaveLength(0);
+    });
   });
 });
 

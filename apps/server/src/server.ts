@@ -50,6 +50,7 @@ export interface StartFoundationServerOptions {
   runtimeEnvironment?: "development" | "test" | "production" | undefined;
   now?: (() => number) | undefined;
   reconnectGraceSeconds?: number | undefined;
+  checkpointTimeoutMs?: number | undefined;
   softPopulationTarget?: number | undefined;
   hardCapacity?: number | undefined;
   rewardPersistence?: RewardPersistence | undefined;
@@ -72,6 +73,12 @@ export interface StartFoundationServerOptions {
     | undefined;
   checkpointLocation?:
     ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
+  recordCheckpointTimeout?: ((details: {
+    logicalMapId: string;
+    sessionId: string;
+    connectionState: LocationCheckpointInput["connectionState"];
+    timeoutMs: number;
+  }) => void) | undefined;
   transitionTickets?: TransitionTicketIssuer | undefined;
   logger?: boolean | undefined;
 }
@@ -91,11 +98,36 @@ function installRequestDispatcher(
   app: FastifyInstance,
   fastifyListener: RequestListener,
   colyseusListener: RequestListener,
+  isMapInstance: (roomId: string) => boolean,
 ) {
   app.server.removeAllListeners("request");
   app.server.on(
     "request",
     (request: IncomingMessage, response: ServerResponse) => {
+      const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+      const joinByIdMatch =
+        request.method === "POST"
+          ? /^\/matchmake\/joinById\/([^/]+)$/.exec(pathname)
+          : undefined;
+      if (joinByIdMatch) {
+        let roomId: string | undefined;
+        try {
+          roomId = decodeURIComponent(joinByIdMatch[1] ?? "");
+        } catch {
+          roomId = undefined;
+        }
+        if (roomId && isMapInstance(roomId)) {
+          const body = JSON.stringify({
+            error: "Map instance selection is not client-controlled",
+          });
+          response.writeHead(400, {
+            "content-type": "application/json",
+            "content-length": String(Buffer.byteLength(body)),
+          });
+          response.end(body);
+          return;
+        }
+      }
       const listener = isColyseusRequest(request)
         ? colyseusListener
         : fastifyListener;
@@ -107,7 +139,6 @@ function installRequestDispatcher(
 function registerPlacementLifecycle(
   handler: RegisteredHandler,
   logicalMapId: string,
-  placementDriver: MapPlacementDriver,
   app: FastifyInstance,
 ): void {
   handler.on("create", (room: { roomId: string }) => {
@@ -116,7 +147,6 @@ function registerPlacementLifecycle(
         event: "map_instance_created",
         logicalMapId,
         roomId: room.roomId,
-        overflow: placementDriver.isOverflowInstance(logicalMapId, room.roomId),
       },
       "Map instance created",
     );
@@ -283,6 +313,19 @@ export async function startFoundationServer(
         ...(options.checkpointLocation === undefined
           ? {}
           : { checkpointLocation: options.checkpointLocation }),
+        ...(options.checkpointTimeoutMs === undefined
+          ? {}
+          : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
+        recordCheckpointTimeout(details) {
+          if (options.recordCheckpointTimeout) {
+            options.recordCheckpointTimeout(details);
+            return;
+          }
+          app.log.warn(
+            { event: "map_checkpoint_timeout", ...details },
+            "Map checkpoint exceeded its lifecycle timeout",
+          );
+        },
         ...(transitionTickets === undefined ? {} : { transitionTickets }),
         portalCooldowns,
         recordLifecycle(event) {
@@ -293,7 +336,6 @@ export async function startFoundationServer(
     registerPlacementLifecycle(
       villageHandler,
       "map:village",
-      placementDriver,
       app,
     );
     const forestHandler = gameServer.define(
@@ -307,6 +349,19 @@ export async function startFoundationServer(
         ...(options.checkpointLocation === undefined
           ? {}
           : { checkpointLocation: options.checkpointLocation }),
+        ...(options.checkpointTimeoutMs === undefined
+          ? {}
+          : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
+        recordCheckpointTimeout(details) {
+          if (options.recordCheckpointTimeout) {
+            options.recordCheckpointTimeout(details);
+            return;
+          }
+          app.log.warn(
+            { event: "map_checkpoint_timeout", ...details },
+            "Map checkpoint exceeded its lifecycle timeout",
+          );
+        },
         ...(transitionTickets === undefined ? {} : { transitionTickets }),
         portalCooldowns,
         mapChatEnabled: options.mapChatEnabled === true,
@@ -320,7 +375,6 @@ export async function startFoundationServer(
     registerPlacementLifecycle(
       forestHandler,
       "map:forest",
-      placementDriver,
       app,
     );
   }
@@ -335,7 +389,12 @@ export async function startFoundationServer(
     await app.close();
     throw new Error("Colyseus request listener is unavailable");
   }
-  installRequestDispatcher(app, fastifyListener, colyseusListener);
+  installRequestDispatcher(
+    app,
+    fastifyListener,
+    colyseusListener,
+    (roomId) => placementDriver.isMapInstance(roomId),
+  );
 
   const address = app.server.address();
   if (!address || typeof address === "string") {
