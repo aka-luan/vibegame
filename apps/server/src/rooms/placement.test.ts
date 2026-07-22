@@ -67,7 +67,11 @@ describe("map placement matrix", () => {
         [
           candidate({ roomId: "room:locked", locked: true }),
           candidate({ roomId: "room:full", clients: 4 }),
-          candidate({ roomId: "room:capacity-limited", clients: 2, maxClients: 2 }),
+          candidate({
+            roomId: "room:capacity-limited",
+            clients: 2,
+            maxClients: 2,
+          }),
           candidate({ roomId: "room:disposing", locked: true }),
           candidate({ roomId: "room:private", instanceRole: "private" }),
           candidate({ roomId: "room:forest", logicalMapId: "map:forest" }),
@@ -83,8 +87,16 @@ describe("map placement matrix", () => {
     expect(
       selectMapInstance(
         [
-          candidate({ roomId: "room:more-populated", clients: 1, createdAt: 1 }),
-          candidate({ roomId: "room:less-populated", clients: 0, createdAt: 100 }),
+          candidate({
+            roomId: "room:more-populated",
+            clients: 1,
+            createdAt: 1,
+          }),
+          candidate({
+            roomId: "room:less-populated",
+            clients: 0,
+            createdAt: 100,
+          }),
         ],
         "map:village",
         config,

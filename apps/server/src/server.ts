@@ -73,12 +73,14 @@ export interface StartFoundationServerOptions {
     | undefined;
   checkpointLocation?:
     ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
-  recordCheckpointTimeout?: ((details: {
-    logicalMapId: string;
-    sessionId: string;
-    connectionState: LocationCheckpointInput["connectionState"];
-    timeoutMs: number;
-  }) => void) | undefined;
+  recordCheckpointTimeout?:
+    | ((details: {
+        logicalMapId: string;
+        sessionId: string;
+        connectionState: LocationCheckpointInput["connectionState"];
+        timeoutMs: number;
+      }) => void)
+    | undefined;
   transitionTickets?: TransitionTicketIssuer | undefined;
   logger?: boolean | undefined;
 }
@@ -333,11 +335,7 @@ export async function startFoundationServer(
         },
       }),
     );
-    registerPlacementLifecycle(
-      villageHandler,
-      "map:village",
-      app,
-    );
+    registerPlacementLifecycle(villageHandler, "map:village", app);
     const forestHandler = gameServer.define(
       ROOM_NAMES.forest,
       createForestRoom(playTickets, {
@@ -372,11 +370,7 @@ export async function startFoundationServer(
         },
       }),
     );
-    registerPlacementLifecycle(
-      forestHandler,
-      "map:forest",
-      app,
-    );
+    registerPlacementLifecycle(forestHandler, "map:forest", app);
   }
   await gameServer.listen(options.port, options.host);
 
@@ -389,11 +383,8 @@ export async function startFoundationServer(
     await app.close();
     throw new Error("Colyseus request listener is unavailable");
   }
-  installRequestDispatcher(
-    app,
-    fastifyListener,
-    colyseusListener,
-    (roomId) => placementDriver.isMapInstance(roomId),
+  installRequestDispatcher(app, fastifyListener, colyseusListener, (roomId) =>
+    placementDriver.isMapInstance(roomId),
   );
 
   const address = app.server.address();

@@ -149,10 +149,8 @@ export class MapPlacementDriver extends LocalDriver {
       this.#config,
     );
 
-    return (
-      mapCandidates.find((room) => room.roomId === selectedRoomId) ??
-      undefined
-    ) as IRoomCache;
+    return (mapCandidates.find((room) => room.roomId === selectedRoomId) ??
+      undefined) as IRoomCache;
   }
 
   inspectInstances(logicalMapId?: string): InstanceInspection[] {
@@ -166,8 +164,7 @@ export class MapPlacementDriver extends LocalDriver {
       })
       .sort(
         (left, right) =>
-          (left.createdAt?.getTime() ?? 0) -
-          (right.createdAt?.getTime() ?? 0),
+          (left.createdAt?.getTime() ?? 0) - (right.createdAt?.getTime() ?? 0),
       )
       .map((room) => ({
         logicalMapId: (room.metadata as MapRoomMetadata).logicalMapId,

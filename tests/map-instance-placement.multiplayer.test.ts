@@ -30,6 +30,7 @@ async function startPlacementServer(options?: {
   inspect?: boolean;
   checkpointLocation?: (input: LocationCheckpointInput) => Promise<boolean>;
   checkpointTimeoutMs?: number;
+  reconnectGraceSeconds?: number;
   recordCheckpointTimeout?: (details: {
     logicalMapId: string;
     sessionId: string;
@@ -49,6 +50,7 @@ async function startPlacementServer(options?: {
     hardCapacity: options?.hardCapacity,
     checkpointLocation: options?.checkpointLocation,
     checkpointTimeoutMs: options?.checkpointTimeoutMs,
+    reconnectGraceSeconds: options?.reconnectGraceSeconds,
     recordCheckpointTimeout: options?.recordCheckpointTimeout,
   });
   return `http://127.0.0.1:${String(runningServer.port)}`;
@@ -126,6 +128,40 @@ describe("headless map-instance placement", () => {
     expect(
       diagnostics.instances.every((instance) => instance.clients <= 2),
     ).toBe(true);
+  });
+
+  it("returns a reconnecting player to its own instance", async () => {
+    // Placement puts reconnect ahead of the soft target: the seat was never
+    // released, so a short disconnect must restore the same map instance
+    // even though a fresh join would be routed to a different one.
+    const endpoint = await startPlacementServer({
+      softPopulationTarget: 1,
+      hardCapacity: 2,
+      reconnectGraceSeconds: 5,
+    });
+    const reconnecting = await joinVillage(endpoint, "Returning Ranger");
+    const elsewhere = await joinVillage(endpoint, "Other Instance Ranger");
+    const ownInstance = reconnecting.roomId;
+    const entityId = reconnecting.sessionId;
+    expect(ownInstance).not.toBe(elsewhere.roomId);
+
+    reconnecting.reconnection.minUptime = 0;
+    reconnecting.reconnection.minDelay = 10;
+    reconnecting.reconnection.delay = 10;
+    reconnecting.reconnection.maxDelay = 20;
+    const didReconnect = new Promise<void>((resolve) =>
+      reconnecting.onReconnect.once(resolve),
+    );
+    void reconnecting.leave(false);
+    await expect(didReconnect).resolves.toBeUndefined();
+
+    expect(reconnecting.roomId).toBe(ownInstance);
+    expect(reconnecting.sessionId).toBe(entityId);
+    await waitUntil(() => {
+      expect(countPlayers(reconnecting.state as PublicVillageState)).toBe(1);
+    });
+    const diagnostics = await inspect(endpoint);
+    expect(diagnostics.instances).toHaveLength(2);
   });
 
   it("keeps hard capacity intact across concurrent joins", async () => {
