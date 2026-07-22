@@ -12,7 +12,6 @@ import type {
   LocationCheckpointInput,
 } from "@gameish/database";
 import type { CombatCatalog } from "@gameish/content/combat";
-import type { DialogueQuestAction } from "@gameish/content/dialogue";
 import {
   CLIENT_MESSAGES,
   ERROR_CODES,
@@ -27,8 +26,6 @@ import {
   type PublicMonsterState,
   type PublicPlayerState,
   type PublicVillageState,
-  type QuestRewardMessage,
-  type QuestStateMessage,
   type TransitionRejectedMessage,
   type TransitionTicketMessage,
 } from "@gameish/protocol";
@@ -68,16 +65,14 @@ import {
   type RewardCandidate,
 } from "../rewards/settlement.js";
 import {
-  resolveDialogueChoice,
-  resolveDialogueNode,
-  type DialogueCharacterState,
-} from "../dialogue/resolver.js";
-import {
   InMemoryQuestPersistence,
   type QuestPersistence,
-  type QuestReward,
 } from "../quests/persistence.js";
-import type { QuestSnapshot } from "../quests/state.js";
+import {
+  QuestDialogueSession,
+  type QuestDialogueDecision,
+  type QuestDialogueMessage,
+} from "../quests/session.js";
 import {
   MapChatRateLimiter,
   validateMapChatIntention,
@@ -359,16 +354,8 @@ export function createVillageRoom(
       cooldowns: portalCooldowns,
       now: this.#now,
     });
-    readonly #characterDialogueState = new Map<
-      string,
-      DialogueCharacterState
-    >();
-    readonly #questSnapshots = new Map<string, QuestSnapshot>();
+    readonly #questSessions = new Map<string, QuestDialogueSession>();
     readonly #equipmentSnapshots = new Map<string, DurableEquipmentSnapshot>();
-    readonly #dialogueSessions = new Map<
-      string,
-      { npcId: string; nodeId: string }
-    >();
     readonly #lastInteractionAtMs = new Map<string, number>();
     readonly #lastDialogueActionAtMs = new Map<string, number>();
     readonly #joinedAtMs = new Map<string, number>();
@@ -493,7 +480,7 @@ export function createVillageRoom(
             this.#sendDialogueRejected(client, ERROR_CODES.invalidInteraction);
             return;
           }
-          this.#dialogueSessions.delete(client.sessionId);
+          this.#questSessions.get(client.sessionId)?.closeDialogue();
         },
       );
       this.onMessage(CLIENT_MESSAGES.questStateRequest, (client) => {
@@ -811,18 +798,18 @@ export function createVillageRoom(
       const encodedIntention = JSON.stringify(unsafeIntention);
       const intention = interactionSchema.safeParse(unsafeIntention);
       const player = this.state.players.get(client.sessionId);
-      const character = this.#characterDialogueState.get(client.sessionId);
+      const session = this.#questSessions.get(client.sessionId);
       if (
         encodedIntention === undefined ||
         Buffer.byteLength(encodedIntention) > MAX_DIALOGUE_MESSAGE_BYTES ||
         !intention.success ||
         !player ||
-        !character
-      ) {
-        this.#sendDialogueRejected(client, ERROR_CODES.invalidInteraction);
-        return;
-      }
-
+        !session
+      )
+        return this.#sendDialogueRejected(
+          client,
+          ERROR_CODES.invalidInteraction,
+        );
       const now = this.state.serverTimeMs;
       const lastInteractionAtMs = this.#lastInteractionAtMs.get(
         client.sessionId,
@@ -830,286 +817,90 @@ export function createVillageRoom(
       if (
         lastInteractionAtMs !== undefined &&
         now < lastInteractionAtMs + INTERACTION_RATE_LIMIT_MS
-      ) {
-        this.#sendDialogueRejected(client, ERROR_CODES.interactionRateLimited);
-        return;
-      }
+      )
+        return this.#sendDialogueRejected(
+          client,
+          ERROR_CODES.interactionRateLimited,
+        );
       this.#lastInteractionAtMs.set(client.sessionId, now);
-
       const interactive = villageMap.interactives.find(
         (candidate) => candidate.id === intention.data.interactiveId,
       );
-      const npc = villageDialogue.npcs.find(
-        (candidate) => candidate.interactiveId === intention.data.interactiveId,
-      );
-      if (!interactive || !npc) {
-        this.#sendDialogueRejected(client, ERROR_CODES.interactionNotFound);
-        return;
-      }
+      if (!interactive)
+        return this.#sendDialogueRejected(
+          client,
+          ERROR_CODES.interactionNotFound,
+        );
       const interactiveX = interactive.x + interactive.width / 2;
       const interactiveY = interactive.y + interactive.height / 2;
       if (
         Math.hypot(player.x - interactiveX, player.y - interactiveY) >
         INTERACTION_RADIUS
-      ) {
-        this.#sendDialogueRejected(client, ERROR_CODES.interactionOutOfRange);
-        return;
-      }
-
-      const graph = villageDialogue.graphs.find(
-        (candidate) => candidate.id === npc.graphId,
-      );
-      if (!graph) {
-        this.#sendDialogueRejected(client, ERROR_CODES.dialogueBlocked);
-        return;
-      }
-      const resolved = resolveDialogueNode(
-        villageDialogue,
-        npc.id,
-        graph.rootNodeId,
-        character,
-      );
-      if (!resolved.success) {
-        this.#sendDialogueRejected(
+      )
+        return this.#sendDialogueRejected(
           client,
-          resolved.reason === "blocked"
-            ? ERROR_CODES.dialogueBlocked
-            : ERROR_CODES.interactionNotFound,
+          ERROR_CODES.interactionOutOfRange,
         );
-        return;
-      }
-      this.#dialogueSessions.set(client.sessionId, {
-        npcId: npc.id,
-        nodeId: resolved.node.nodeId,
+      const outcome = session.interact({
+        interactiveId: intention.data.interactiveId,
       });
-      client.send(SERVER_MESSAGES.dialogueNode, resolved.node);
+      if (outcome.kind === "messages")
+        this.#sendQuestDialogueMessages(client, outcome.messages);
     }
 
-    async #handleDialogueChoice(
-      client: Client,
-      unsafeIntention: unknown,
-    ): Promise<void> {
-      const encodedIntention = JSON.stringify(unsafeIntention);
-      const intention = dialogueChoiceSchema.safeParse(unsafeIntention);
-      const character = this.#characterDialogueState.get(client.sessionId);
-      const session = this.#dialogueSessions.get(client.sessionId);
+    // prettier-ignore
+    async #handleDialogueChoice(client: Client, unsafeIntention: unknown): Promise<void> {
+      const encodedIntention = JSON.stringify(unsafeIntention); const intention = dialogueChoiceSchema.safeParse(unsafeIntention);
+      const session = this.#questSessions.get(client.sessionId);
       if (
         encodedIntention === undefined ||
         Buffer.byteLength(encodedIntention) > MAX_DIALOGUE_MESSAGE_BYTES ||
         !intention.success ||
-        !character
-      ) {
-        this.#sendDialogueRejected(client, ERROR_CODES.invalidInteraction);
-        return;
-      }
-      if (!session) {
-        this.#sendDialogueRejected(client, ERROR_CODES.dialogueNotActive);
-        return;
-      }
-      const now = this.state.serverTimeMs;
-      const lastDialogueActionAtMs = this.#lastDialogueActionAtMs.get(
-        client.sessionId,
-      );
+        !session
+      )
+        return this.#sendDialogueRejected(
+          client,
+          ERROR_CODES.invalidInteraction,
+        );
+      const now = this.state.serverTimeMs; const lastDialogueActionAtMs = this.#lastDialogueActionAtMs.get(client.sessionId);
       if (
         lastDialogueActionAtMs !== undefined &&
         now < lastDialogueActionAtMs + DIALOGUE_ACTION_RATE_LIMIT_MS
-      ) {
-        this.#sendDialogueRejected(client, ERROR_CODES.interactionRateLimited);
-        return;
-      }
+      )
+        return this.#sendDialogueRejected(
+          client,
+          ERROR_CODES.interactionRateLimited,
+        );
       this.#lastDialogueActionAtMs.set(client.sessionId, now);
-      if (
-        session.npcId !== intention.data.npcId ||
-        session.nodeId !== intention.data.nodeId
-      ) {
-        this.#sendDialogueRejected(client, ERROR_CODES.dialogueChoiceInvalid);
-        return;
-      }
-
-      const resolved = resolveDialogueChoice(
-        villageDialogue,
-        session.npcId,
-        session.nodeId,
-        intention.data.choiceId,
-        character,
-      );
-      if (!resolved.success) {
-        this.#sendDialogueRejected(
-          client,
-          resolved.reason === "blocked"
-            ? ERROR_CODES.dialogueBlocked
-            : ERROR_CODES.dialogueChoiceInvalid,
-        );
-        return;
-      }
-      if (resolved.action) {
-        const actionResult = await this.#applyQuestAction(
-          client,
-          resolved.action,
-        );
-        if (!actionResult) return;
-      }
-      if ("closed" in resolved) {
-        this.#dialogueSessions.delete(client.sessionId);
-        client.send(SERVER_MESSAGES.dialogueClosed, {
-          npcId: session.npcId,
-        });
-        return;
-      }
-      this.#dialogueSessions.set(client.sessionId, {
-        npcId: session.npcId,
-        nodeId: resolved.node.nodeId,
+      const outcome = session.chooseDialogue({
+        npcId: intention.data.npcId,
+        nodeId: intention.data.nodeId,
+        choiceId: intention.data.choiceId,
       });
-      client.send(SERVER_MESSAGES.dialogueNode, resolved.node);
+      if (outcome.kind === "messages")
+        return this.#sendQuestDialogueMessages(client, outcome.messages);
+      await this.#persistQuestDecision(session, outcome, client);
     }
 
-    #sendDialogueRejected(
-      client: Client,
-      code: (typeof ERROR_CODES)[keyof typeof ERROR_CODES],
-    ): void {
-      client.send(SERVER_MESSAGES.dialogueRejected, { code });
+    // prettier-ignore
+    #sendDialogueRejected(client: Client, code: (typeof ERROR_CODES)[keyof typeof ERROR_CODES]): void { client.send(SERVER_MESSAGES.dialogueRejected, { code }); }
+
+    // prettier-ignore
+    async #persistQuestDecision(session: QuestDialogueSession, decision: Extract<QuestDialogueDecision, { kind: "transition" }>, client?: Client): Promise<void> {
+      try { const result = await this.#questsForCharacter(decision.request.characterId).transitionQuest(decision.request); if (client) this.#sendQuestDialogueMessages(client, session.applyTransition(decision, result)); else session.applyTransition(decision, result); } catch { if (client) this.#sendQuestDialogueMessages(client, session.persistenceFailure(decision)); }
     }
 
-    async #applyQuestAction(
-      client: Client,
-      action: DialogueQuestAction,
-    ): Promise<boolean> {
-      const identity = this.#playerIdentity.get(client.sessionId);
-      const definition = this.#questDefinition;
-      if (!identity || !definition || action.questId !== definition.id) {
-        this.#sendQuestRejected(client, ERROR_CODES.questNotFound);
-        return false;
-      }
-      const reward: QuestReward | undefined =
-        action.kind === "complete_quest"
-          ? definition.serverOnly.reward
-          : undefined;
-      try {
-        const result = await this.#questsForCharacter(
-          identity.characterId,
-        ).transitionQuest({
-          characterId: identity.characterId,
-          questId: definition.id,
-          objective: definition.serverOnly.objective,
-          transition:
-            action.kind === "accept_quest"
-              ? { kind: "accept" }
-              : {
-                  kind: "complete",
-                  completionId: `quest-completion:${identity.characterId}:${definition.id}`,
-                },
-          ...(reward === undefined ? {} : { reward }),
-        });
-        if (!result.applied) {
-          this.#sendQuestRejected(
-            client,
-            result.reason === "objective_mismatch"
-              ? ERROR_CODES.questObjectiveInvalid
-              : ERROR_CODES.questTransitionInvalid,
-          );
-          return false;
-        }
-        this.#setQuestSnapshot(client.sessionId, result.snapshot);
-        this.#sendQuestState(client);
-        if (action.kind === "complete_quest") {
-          client.send(SERVER_MESSAGES.questReward, {
-            questId: definition.id,
-            ...definition.serverOnly.reward,
-          } satisfies QuestRewardMessage);
-          void this.#reloadEquipment(
-            client.sessionId,
-            identity.characterId,
-            "quest_completion_reload",
-          );
-        }
-        return true;
-      } catch {
-        this.#sendQuestRejected(
-          client,
-          ERROR_CODES.questPersistenceUnavailable,
-        );
-        return false;
-      }
+    // prettier-ignore
+    async #applyQuestObjectiveProgress(characterId: string, eventId: string, targetId: string): Promise<void> {
+      const sessionId = [...this.#playerIdentity.entries()].find(([, identity]) => identity.characterId === characterId)?.[0]; const session = sessionId ? this.#questSessions.get(sessionId) : undefined; if (!sessionId || !session) return;
+      const decision = session.objectiveProgress({ eventId, targetId }); if (!decision) return; const client = this.clients.find((candidate) => candidate.sessionId === sessionId); await this.#persistQuestDecision(session, decision, client);
     }
 
-    async #applyQuestObjectiveProgress(
-      characterId: string,
-      eventId: string,
-      targetId: string,
-    ): Promise<void> {
-      const sessionId = [...this.#playerIdentity.entries()].find(
-        ([, identity]) => identity.characterId === characterId,
-      )?.[0];
-      const definition = this.#questDefinition;
-      if (!sessionId || !definition) return;
-      const current = this.#questSnapshots.get(sessionId);
-      if (!current || current.status !== "active") return;
-      try {
-        const result = await this.#questsForCharacter(
-          characterId,
-        ).transitionQuest({
-          characterId,
-          questId: definition.id,
-          objective: definition.serverOnly.objective,
-          transition: { kind: "objective", eventId, targetId },
-        });
-        if (!result.applied) return;
-        this.#setQuestSnapshot(sessionId, result.snapshot);
-        const client = this.clients.find(
-          (candidate) => candidate.sessionId === sessionId,
-        );
-        if (client) this.#sendQuestState(client);
-      } catch {
-        const client = this.clients.find(
-          (candidate) => candidate.sessionId === sessionId,
-        );
-        if (client)
-          this.#sendQuestRejected(
-            client,
-            ERROR_CODES.questPersistenceUnavailable,
-          );
-      }
-    }
+    // prettier-ignore
+    #sendQuestState(client: Client): void { const session = this.#questSessions.get(client.sessionId); if (session) this.#sendQuestDialogueMessages(client, [session.questStateMessage()]); }
 
-    #setQuestSnapshot(sessionId: string, snapshot: QuestSnapshot): void {
-      this.#questSnapshots.set(sessionId, snapshot);
-      const character = this.#characterDialogueState.get(sessionId);
-      if (!character) return;
-      const questStatuses = new Map(character.questStatuses ?? []);
-      questStatuses.set(snapshot.questId, snapshot.status);
-      const completedQuestIds = new Set(character.completedQuestIds);
-      if (snapshot.status === "completed") {
-        completedQuestIds.add(snapshot.questId);
-      }
-      this.#characterDialogueState.set(sessionId, {
-        ...character,
-        completedQuestIds,
-        questStatuses,
-      });
-    }
-
-    #sendQuestState(client: Client): void {
-      const definition = this.#questDefinition;
-      const snapshot = this.#questSnapshots.get(client.sessionId);
-      if (!definition || !snapshot) return;
-      const message: QuestStateMessage = {
-        questId: definition.id,
-        status: snapshot.status,
-        progress: snapshot.progress,
-        requiredCount: definition.serverOnly.objective.requiredCount,
-        title: definition.clientVisible.title,
-        description: definition.clientVisible.description,
-        guidance: definition.clientVisible.guidance,
-      };
-      client.send(SERVER_MESSAGES.questState, message);
-    }
-
-    #sendQuestRejected(
-      client: Client,
-      code: (typeof ERROR_CODES)[keyof typeof ERROR_CODES],
-    ): void {
-      client.send(SERVER_MESSAGES.questRejected, { code });
-    }
+    // prettier-ignore
+    #sendQuestDialogueMessages(client: Client, messages: QuestDialogueMessage[]): void { for (const message of messages) { client.send(SERVER_MESSAGES[message.type], message.payload); if (message.type !== "questReward") continue; const characterId = this.#playerIdentity.get(client.sessionId)?.characterId; if (characterId) void this.#reloadEquipment(client.sessionId, characterId, "quest_completion_reload"); } }
 
     #combatActionState(client: Client): CombatActionState {
       return {
@@ -1204,10 +995,8 @@ export function createVillageRoom(
       this.#lastProcessedSequences.delete(sessionId);
       this.#playerCombat.delete(sessionId);
       this.#playerIdentity.delete(sessionId);
-      this.#characterDialogueState.delete(sessionId);
-      this.#questSnapshots.delete(sessionId);
+      this.#questSessions.delete(sessionId);
       this.#equipmentSnapshots.delete(sessionId);
-      this.#dialogueSessions.delete(sessionId);
       this.#lastInteractionAtMs.delete(sessionId);
       this.#lastDialogueActionAtMs.delete(sessionId);
       this.#joinedAtMs.delete(sessionId);
@@ -1286,13 +1075,22 @@ export function createVillageRoom(
         consumption.admission.characterId,
         this.#questDefinition?.id ?? villageSlice.questId,
       );
-      this.#questSnapshots.set(client.sessionId, questSnapshot);
-      this.#characterDialogueState.set(client.sessionId, {
-        level: consumption.admission.characterState?.progression.level ?? 1,
-        flags: new Set(),
-        completedQuestIds: new Set(),
-        questStatuses: new Map([[questSnapshot.questId, questSnapshot.status]]),
-      });
+      const definition = this.#questDefinition;
+      if (!definition)
+        throw new Error("Village quest definition is unavailable");
+      this.#questSessions.set(
+        client.sessionId,
+        new QuestDialogueSession({
+          characterId: consumption.admission.characterId,
+          character: {
+            level: consumption.admission.characterState?.progression.level ?? 1,
+            flags: new Set(),
+          },
+          snapshot: questSnapshot,
+          definition,
+          dialogue: villageDialogue,
+        }),
+      );
       this.#joinedAtMs.set(client.sessionId, this.state.serverTimeMs);
       this.#pendingIntentions.set(client.sessionId, new Map());
       this.#lastProcessedSequences.set(client.sessionId, 0);
