@@ -155,6 +155,6 @@ Interrupt only for:
 - the same failure surviving **more than 2** fix iterations
 - credentials or access you cannot grant yourself
 
-If the issue *implies* an answer (a linked doc, a stated preference, an approved
+If the issue _implies_ an answer (a linked doc, a stated preference, an approved
 design section), take it, note the assumption in the PR body, and keep going.
 Everything else: decide and move on.

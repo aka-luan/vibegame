@@ -85,6 +85,23 @@ committing it. The deterministic seed is intended for the disposable local
 database only; it creates a clearly identified guest sample and initial content
 references and is safe to run repeatedly.
 
+To reproduce the clean-runner condition locally, start from a fresh checkout,
+install with `pnpm install --frozen-lockfile`, and remove only ignored workspace
+build output before invoking each affected validation command:
+
+```bash
+find apps packages -type d -name dist -prune -exec rm -rf {} +
+pnpm test
+find apps packages -type d -name dist -prune -exec rm -rf {} +
+pnpm test:integration # requires pnpm db:up
+find apps packages -type d -name dist -prune -exec rm -rf {} +
+pnpm test:multiplayer
+```
+
+Each command rebuilds the runtime workspace exports it consumes. The unit,
+integration, and multiplayer CI jobs therefore remain independent of the build
+job and of one another.
+
 ## Boundaries proven here
 
 - Phaser owns the responsive world canvas, bounded camera, layered Tiled map,

@@ -34,8 +34,7 @@ export type BackgroundAssetManifest = z.infer<
 >;
 
 export type BackgroundAssetManifestValidationResult =
-  | { success: true }
-  | { success: false; issues: string[] };
+  { success: true } | { success: false; issues: string[] };
 
 export function validateBackgroundAssetManifest(
   input: unknown,
