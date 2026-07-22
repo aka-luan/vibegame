@@ -48,7 +48,22 @@ export class DevelopmentPlayTickets {
 
   issue(
     displayName: string,
-    options: { partyId?: string | undefined } = {},
+    options: {
+      partyId?: string | undefined;
+      /**
+       * Test-only override of the initial spawn's logical map/entrance.
+       * Real login always lands a character at the village's default
+       * entrance; this exists so headless tests can place a development
+       * identity directly at a named entrance (e.g. next to a portal)
+       * instead of spending real wall-clock time walking a full map,
+       * without adding any client-selectable "choose your spawn" surface
+       * (AC1 is about the client-facing join contract, which this does not
+       * touch — `/development/play-ticket` is already fail-closed outside
+       * development/test, per ADR-0007).
+       */
+      mapId?: string | undefined;
+      entranceId?: string | undefined;
+    } = {},
   ): { ticket: string; expiresAt: number } {
     this.#purgeExpired();
     const userId = `development:user:${randomUUID()}`;
@@ -67,8 +82,8 @@ export class DevelopmentPlayTickets {
         characterId,
         partyId: options.partyId,
         displayName,
-        logicalDestination: villageSlice.mapId,
-        entranceId: villageSlice.entranceId,
+        logicalDestination: options.mapId ?? villageSlice.mapId,
+        entranceId: options.entranceId ?? villageSlice.entranceId,
         contentVersion: villageSlice.contentVersion,
         nonce: randomUUID(),
         appearance,

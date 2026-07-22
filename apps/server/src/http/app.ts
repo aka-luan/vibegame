@@ -27,7 +27,11 @@ export interface HttpAppOptions {
 }
 
 const developmentTicketRequestSchema = z
-  .object({ displayName: z.string().trim().min(1).max(40) })
+  .object({
+    displayName: z.string().trim().min(1).max(40),
+    mapId: z.string().trim().min(1).max(80).optional(),
+    entranceId: z.string().trim().min(1).max(80).optional(),
+  })
   .strict();
 
 const guestSessionRequestSchema = z.object({}).strict();
@@ -86,9 +90,12 @@ export function createHttpApp(options: HttpAppOptions): FastifyInstance {
       if (!parsed.success) {
         return reply.status(400).send({ code: ERROR_CODES.invalidJoinOptions });
       }
-      return reply
-        .status(201)
-        .send(developmentPlayTickets.issue(parsed.data.displayName));
+      return reply.status(201).send(
+        developmentPlayTickets.issue(parsed.data.displayName, {
+          mapId: parsed.data.mapId,
+          entranceId: parsed.data.entranceId,
+        }),
+      );
     });
   }
 
