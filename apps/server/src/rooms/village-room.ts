@@ -44,23 +44,21 @@ import {
   applyMonsterEffectsToPlayer,
   buildCombatStateMessage,
   resolveCombatAction,
-  CombatActivityLog,
   type CombatActionOutcome,
   type CombatActionState,
   type PlayerCombatState,
 } from "../combat/action.js";
 import { MonsterLifecycle } from "../combat/monster-lifecycle.js";
 import { expireCombatStatuses, combatControlState } from "../combat/status.js";
-import { rewardGrantId } from "../rewards/grants.js";
-import { rollPersonalLoot } from "../rewards/loot.js";
 import {
   InMemoryRewardPersistence,
   type RewardPersistence,
 } from "../rewards/persistence.js";
 import {
-  ParticipationWindow,
-  type ParticipationCandidate,
-} from "../rewards/participation.js";
+  RewardSettlementWindow,
+  settleDefeat,
+  type RewardCandidate,
+} from "../rewards/settlement.js";
 import {
   resolveDialogueChoice,
   resolveDialogueNode,
@@ -121,8 +119,6 @@ const equipmentUnequipSchema = z
 const MAX_MOVEMENT_MESSAGE_BYTES = 256;
 const MAX_INTENTION_VIOLATIONS = 5;
 const MAX_PENDING_INTENTIONS = 120;
-const REWARD_PROXIMITY_RADIUS = 180;
-const REWARD_AFK_AFTER_MS = 5_000;
 const INTERACTION_RADIUS = 56;
 const INTERACTION_RATE_LIMIT_MS = 250;
 const DIALOGUE_ACTION_RATE_LIMIT_MS = 100;
@@ -336,10 +332,9 @@ export function createVillageRoom(
     readonly #lastInteractionAtMs = new Map<string, number>();
     readonly #lastDialogueActionAtMs = new Map<string, number>();
     readonly #joinedAtMs = new Map<string, number>();
-    readonly #combatActivity = new CombatActivityLog();
     readonly #lastCheckpointAtMs = new Map<string, number>();
     readonly #disconnectedSessions = new Set<string>();
-    #participationWindow!: ParticipationWindow;
+    readonly #participationWindow = new RewardSettlementWindow();
     #defeatSequence = 0;
     #monsterLifecycle!: MonsterLifecycle;
 
@@ -371,7 +366,6 @@ export function createVillageRoom(
         rng: this.#rng,
         bossAction,
       });
-      this.#participationWindow = this.#newParticipationWindow();
       this.#syncPublicMonster();
 
       this.maxMessagesPerSecond = 60;
@@ -689,6 +683,19 @@ export function createVillageRoom(
       });
     }
 
+    // prettier-ignore
+    async #reloadEquipment(sessionId: string, characterId: string, operation: string): Promise<void> {
+      try {
+        const snapshot = await this.#equipmentForCharacter(characterId).load(characterId);
+        if (!this.state.players.has(sessionId)) return;
+        this.#applyEquipmentSnapshot(sessionId, snapshot);
+        const client = this.clients.find((candidate) => candidate.sessionId === sessionId);
+        if (client) this.#sendEquipmentState(client);
+      } catch (error) {
+        this.#recordEquipmentPersistenceFailure(operation, characterId, error);
+      }
+    }
+
     #handleInteraction(client: Client, unsafeIntention: unknown): void {
       const encodedIntention = JSON.stringify(unsafeIntention);
       const intention = interactionSchema.safeParse(unsafeIntention);
@@ -898,20 +905,11 @@ export function createVillageRoom(
             questId: definition.id,
             ...definition.serverOnly.reward,
           } satisfies QuestRewardMessage);
-          void this.#equipmentForCharacter(identity.characterId)
-            .load(identity.characterId)
-            .then((snapshot) => {
-              if (!this.state.players.has(client.sessionId)) return;
-              this.#applyEquipmentSnapshot(client.sessionId, snapshot);
-              this.#sendEquipmentState(client);
-            })
-            .catch((error) => {
-              this.#recordEquipmentPersistenceFailure(
-                "quest_completion_reload",
-                identity.characterId,
-                error,
-              );
-            });
+          void this.#reloadEquipment(
+            client.sessionId,
+            identity.characterId,
+            "quest_completion_reload",
+          );
         }
         return true;
       } catch {
@@ -1305,7 +1303,7 @@ export function createVillageRoom(
             entityId: this.#monsterLifecycle.state.entityId,
           });
         } else if (event.type === "respawned") {
-          this.#participationWindow = this.#newParticipationWindow();
+          this.#participationWindow.open();
           this.broadcast(SERVER_MESSAGES.combatEvent, {
             kind: "respawned",
             entityId: this.#monsterLifecycle.state.entityId,
@@ -1373,117 +1371,38 @@ export function createVillageRoom(
       client.send(SERVER_MESSAGES.combatResult, result);
     }
 
+    // Kept compact so room remains only adapter: record, settle, persist, send.
+    // prettier-ignore
     #recordParticipation(client: Client): void {
       const identity = this.#playerIdentity.get(client.sessionId);
-      if (!identity) return;
-      const now = this.state.serverTimeMs;
-      this.#combatActivity.record(identity.characterId, now);
-      this.#participationWindow.recordActivity({
-        characterId: identity.characterId,
-        partyId: identity.partyId,
-        atMs: now,
-      });
+      if (identity) this.#participationWindow.recordActivity({ ...identity, atMs: this.state.serverTimeMs });
     }
 
+    // prettier-ignore
     #completeMonsterDefeat(monsterEntityId: string): void {
-      this.#participationWindow.close(this.state.serverTimeMs);
-      this.#defeatSequence += 1;
-      const defeatSequence = this.#defeatSequence;
-      const monster = this.#monsterLifecycle.state;
-      const candidates: ParticipationCandidate[] = [];
-      for (const [sessionId, player] of this.state.players) {
-        const identity = this.#playerIdentity.get(sessionId);
+      const candidates: RewardCandidate[] = []; for (const [recipientSessionId, player] of this.state.players) {
+        const identity = this.#playerIdentity.get(recipientSessionId);
         if (!identity) continue;
-        const joinedAtMs =
-          this.#joinedAtMs.get(sessionId) ?? Number.MAX_SAFE_INTEGER;
-        candidates.push({
-          characterId: identity.characterId,
-          partyId: identity.partyId,
-          x: player.x,
-          y: player.y,
-          connected: !this.#disconnectedSessions.has(sessionId),
-          joinedAtMs,
-          lastActivityAtMs: this.#combatActivity.lastActivityAtMs(
-            identity.characterId,
-            joinedAtMs,
-          ),
-        });
+        candidates.push({ ...identity, recipientSessionId, x: player.x, y: player.y,
+          connected: !this.#disconnectedSessions.has(recipientSessionId), joinedAtMs: this.#joinedAtMs.get(recipientSessionId) ?? Number.MAX_SAFE_INTEGER });
       }
-      const eligibleCharacters = this.#participationWindow.eligibleCharacters({
-        defeatedAtMs: this.state.serverTimeMs,
-        monsterPosition: { x: monster.x, y: monster.y },
-        candidates,
-      });
-      const sourceMonsterId = this.#combatCatalog.monsters[0]?.id;
+      const monster = this.#monsterLifecycle.state; const sourceMonsterId = this.#combatCatalog.monsters[0]?.id;
       if (!sourceMonsterId) return;
-      const questEventId = `quest-event:${this.roomId}:${monsterEntityId}:${String(defeatSequence)}`;
-      for (const characterId of eligibleCharacters) {
-        void this.#applyQuestObjectiveProgress(
-          characterId,
-          questEventId,
-          sourceMonsterId,
-        );
-      }
-      const loot = this.#combatCatalog.loot.find(
-        (definition) => definition.monsterId === sourceMonsterId,
-      );
-      if (!loot) return;
-      for (const characterId of eligibleCharacters) {
-        const sessionId = [...this.#playerIdentity.entries()].find(
-          ([, identity]) => identity.characterId === characterId,
-        )?.[0];
-        if (!sessionId) continue;
-        const itemId = rollPersonalLoot(loot, this.#rewardRng);
-        const grant = {
-          grantId: rewardGrantId(
-            this.roomId,
-            monsterEntityId,
-            defeatSequence,
-            characterId,
-          ),
-          characterId,
-          sourceMonsterId,
-          defeatSequence,
-          itemId,
-          quantity: 1,
-        };
-        void this.#rewardPersistence
-          .grant(grant)
-          .then(() => {
-            const client = this.clients.find(
-              (candidate) => candidate.sessionId === sessionId,
-            );
-            void this.#equipmentForCharacter(characterId)
-              .load(characterId)
-              .then((snapshot) => {
-                if (!this.state.players.has(sessionId)) return;
-                this.#applyEquipmentSnapshot(sessionId, snapshot);
-                const currentClient = this.clients.find(
-                  (candidate) => candidate.sessionId === sessionId,
-                );
-                if (currentClient) this.#sendEquipmentState(currentClient);
-              })
-              .catch((error) => {
-                this.#recordEquipmentPersistenceFailure(
-                  "reward_reload",
-                  characterId,
-                  error,
-                );
-              });
-            client?.send(SERVER_MESSAGES.rewardSummary, {
-              sourceMonsterId,
-              items: [{ itemId, quantity: 1 }],
-            });
-          })
-          .catch(() => undefined);
-      }
-    }
-
-    #newParticipationWindow(): ParticipationWindow {
-      return new ParticipationWindow({
-        proximityRadius: REWARD_PROXIMITY_RADIUS,
-        afkAfterMs: REWARD_AFK_AFTER_MS,
+      const defeatSequence = ++this.#defeatSequence; const settlement = settleDefeat({
+        participationWindow: this.#participationWindow, defeatedMonster: {
+          entityId: monsterEntityId, sourceMonsterId, position: { x: monster.x, y: monster.y } },
+        roomInstanceId: this.roomId, defeatSequence, candidates,
+        combatCatalog: this.#combatCatalog, clock: () => this.state.serverTimeMs, random: this.#rewardRng,
       });
+      for (const grant of settlement.grants) {
+        void this.#applyQuestObjectiveProgress(grant.characterId, grant.completionId, sourceMonsterId); if (!grant.reward) continue;
+        void this.#rewardPersistence.grant(grant.reward).then(() => {
+          void this.#reloadEquipment(grant.recipientSessionId, grant.characterId, "reward_reload");
+          this.clients.find((client) => client.sessionId === grant.recipientSessionId)
+            ?.send(SERVER_MESSAGES.rewardSummary, { sourceMonsterId,
+              items: [{ itemId: grant.reward!.itemId, quantity: grant.reward!.quantity }] });
+        }).catch(() => undefined);
+      }
     }
 
     #monsterHealthFraction(): number {
