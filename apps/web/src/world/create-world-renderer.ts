@@ -1,6 +1,6 @@
-import villageMap from "@gameish/content/village-map";
 import villageCombat from "@gameish/content/village-combat";
 import villageDialogue from "@gameish/content/village-dialogue";
+import type { ClientMapArtifact } from "@gameish/content";
 import type { PublicPlayerPresence } from "@gameish/protocol";
 import villageCharacter from "@gameish/content/village-character";
 import { moveCharacterFoot, PLAYER_MOVEMENT } from "@gameish/world";
@@ -41,6 +41,7 @@ export interface WorldRenderer {
 
 interface VillageSceneOptions {
   presence: VillagePresence;
+  map: ClientMapArtifact;
   onSnapshot: (snapshot: WorldSnapshot) => void;
   onReady: (input: MovementInput) => void;
 }
@@ -83,7 +84,8 @@ class VillageScene extends Phaser.Scene {
 
   preload(): void {
     preloadVillageCharacter(this);
-    const background = villageMap.layers.find(
+    const mapArtifact = this.#options.map;
+    const background = mapArtifact.layers.find(
       (layer) => layer.name === "background",
     );
     if (background?.type === "imagelayer") {
@@ -92,6 +94,7 @@ class VillageScene extends Phaser.Scene {
   }
 
   create(): void {
+    const mapArtifact = this.#options.map;
     const tileTexture = this.textures.createCanvas("village-tiles", 48, 16);
     if (!tileTexture) throw new Error("Could not create village tile texture");
     const context = tileTexture.context;
@@ -108,7 +111,7 @@ class VillageScene extends Phaser.Scene {
     this.cache.tilemap.add("village-map", {
       format: Phaser.Tilemaps.Formats.TILED_JSON,
       data: {
-        ...villageMap,
+        ...mapArtifact,
         type: "map",
         version: "1.10",
         tiledversion: "1.11.2",
@@ -120,14 +123,14 @@ class VillageScene extends Phaser.Scene {
     const map = this.make.tilemap({ key: "village-map" });
     const tileset = map.addTilesetImage("village_placeholder", "village-tiles");
     if (!tileset) throw new Error("Could not bind village tileset");
-    const background = villageMap.layers.find(
+    const background = mapArtifact.layers.find(
       (layer) => layer.name === "background",
     );
     if (background?.type === "imagelayer") {
       this.add
         .image(
-          (villageMap.width * villageMap.tilewidth) / 2,
-          (villageMap.height * villageMap.tileheight) / 2,
+          (mapArtifact.width * mapArtifact.tilewidth) / 2,
+          (mapArtifact.height * mapArtifact.tileheight) / 2,
           "village-background",
         )
         .setOrigin(0.5)
@@ -148,7 +151,7 @@ class VillageScene extends Phaser.Scene {
       map.createLayer(layerName, tileset, 0, 0)?.setDepth(depth);
     }
 
-    const hint = villageMap.interactionHints[0];
+    const hint = mapArtifact.interactionHints[0];
     if (hint) {
       const npcBody = this.add
         .rectangle(0, -12, 14, 24, 0x6f87b8)
@@ -184,8 +187,8 @@ class VillageScene extends Phaser.Scene {
       .setBounds(
         0,
         0,
-        villageMap.width * villageMap.tilewidth,
-        villageMap.height * villageMap.tileheight,
+        mapArtifact.width * mapArtifact.tilewidth,
+        mapArtifact.height * mapArtifact.tileheight,
       )
       .setZoom(2)
       .setRoundPixels(true);
@@ -202,7 +205,7 @@ class VillageScene extends Phaser.Scene {
     if (!this.#input) return;
     const direction = this.#input.direction();
     if (this.#input.consumeInteraction()) {
-      const hint = villageMap.interactionHints[0];
+      const hint = this.#options.map.interactionHints[0];
       const localPlayer = this.#latestPresence?.players.find(
         (player) => player.entityId === this.#latestPresence?.localEntityId,
       );
@@ -410,7 +413,7 @@ class VillageScene extends Phaser.Scene {
                 speed: PLAYER_MOVEMENT.speed,
                 elapsedMs,
                 collision: villageCharacter.collision,
-                world: villageMap.movement,
+                world: this.#options.map.movement,
               });
             },
           });
@@ -442,7 +445,7 @@ class VillageScene extends Phaser.Scene {
   }
 
   #publishSnapshot(local: PublicPlayerPresence, playerCount: number): void {
-    const hint = villageMap.interactionHints[0];
+    const hint = this.#options.map.interactionHints[0];
     const nearHint =
       hint !== undefined &&
       Math.hypot(local.x - hint.x, local.y - hint.y) <= 46;
@@ -484,11 +487,13 @@ class VillageScene extends Phaser.Scene {
 export function createWorldRenderer(
   parent: HTMLElement,
   presence: VillagePresence,
+  map: ClientMapArtifact,
   onSnapshot: (snapshot: WorldSnapshot) => void,
 ): WorldRenderer {
   let movementInput: MovementInput | undefined;
   const scene = new VillageScene({
     presence,
+    map,
     onSnapshot,
     onReady(input) {
       movementInput = input;

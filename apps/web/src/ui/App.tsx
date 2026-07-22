@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import forestMap from "@gameish/content/forest-map";
 import villageCombat from "@gameish/content/village-combat";
 import villageEquipment from "@gameish/content/village-equipment";
+import villageMap from "@gameish/content/village-map";
+import type { ClientMapArtifact } from "@gameish/content";
 
 import {
   connectDevelopmentVillage,
@@ -14,6 +17,67 @@ import {
   type WorldSnapshot,
 } from "../world/create-world-renderer.js";
 import { DialogueDialog } from "./DialogueDialog.js";
+
+/**
+ * The client-safe map artifact for every logical map the world renderer can
+ * be rebuilt for. Keyed by the map id the presence snapshot names as
+ * `currentMapId`, which mirrors `village-presence.ts`'s own lookup.
+ */
+const MAP_ARTIFACTS_BY_ID: Record<string, ClientMapArtifact> = {
+  [villageMap.id]: villageMap,
+  [forestMap.id]: forestMap,
+};
+
+function mapArtifactFor(mapId: string | undefined): ClientMapArtifact {
+  return (mapId && MAP_ARTIFACTS_BY_ID[mapId]) || villageMap;
+}
+
+type CombatSnapshot = Pick<
+  VillagePresenceSnapshot,
+  | "monsters"
+  | "selectedTargetEntityId"
+  | "combatResult"
+  | "combatState"
+  | "telegraphs"
+  | "dialogueNode"
+  | "dialogueError"
+  | "questState"
+  | "questReward"
+  | "questError"
+  | "equipmentState"
+  | "equipmentResult"
+  | "previewAppearance"
+  | "serverTimeOffsetMs"
+  | "currentMapId"
+  | "activePortalPrompt"
+  | "transitionStatus"
+  | "lastTransitionErrorCode"
+>;
+
+function pickCombatSnapshot(
+  presenceSnapshot: VillagePresenceSnapshot,
+): CombatSnapshot {
+  return {
+    monsters: presenceSnapshot.monsters,
+    selectedTargetEntityId: presenceSnapshot.selectedTargetEntityId,
+    combatResult: presenceSnapshot.combatResult,
+    combatState: presenceSnapshot.combatState,
+    telegraphs: presenceSnapshot.telegraphs,
+    dialogueNode: presenceSnapshot.dialogueNode,
+    dialogueError: presenceSnapshot.dialogueError,
+    questState: presenceSnapshot.questState,
+    questReward: presenceSnapshot.questReward,
+    questError: presenceSnapshot.questError,
+    equipmentState: presenceSnapshot.equipmentState,
+    equipmentResult: presenceSnapshot.equipmentResult,
+    previewAppearance: presenceSnapshot.previewAppearance,
+    serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
+    currentMapId: presenceSnapshot.currentMapId,
+    activePortalPrompt: presenceSnapshot.activePortalPrompt,
+    transitionStatus: presenceSnapshot.transitionStatus,
+    lastTransitionErrorCode: presenceSnapshot.lastTransitionErrorCode,
+  };
+}
 
 const initialSnapshot: WorldSnapshot = {
   x: 128,
@@ -46,6 +110,23 @@ function requestedSimulatedLatency(): number {
     new URLSearchParams(window.location.search).get("latency") ?? 0,
   );
   return Number.isFinite(value) ? Math.max(0, Math.min(500, value)) : 0;
+}
+
+/**
+ * Dev/test-only spawn override read from the URL, forwarded to
+ * `connectDevelopmentVillage` so a headless or e2e test can land directly
+ * at a named entrance (e.g. next to a portal) instead of spending real time
+ * walking there. Only wired up under development login (see
+ * `useDevelopmentLogin` below) — production admission never reads these.
+ */
+function requestedSpawnOverride(): { mapId?: string; entranceId?: string } {
+  const params = new URLSearchParams(window.location.search);
+  const mapId = params.get("mapId")?.trim();
+  const entranceId = params.get("entranceId")?.trim();
+  return {
+    ...(mapId ? { mapId } : {}),
+    ...(entranceId ? { entranceId } : {}),
+  };
 }
 
 const basicAttack = villageCombat.attacks.find(
@@ -85,25 +166,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   const [clockMs, setClockMs] = useState(() => Date.now());
   const [dialogueTextScale, setDialogueTextScale] = useState(1);
   const [guidanceEnabled, setGuidanceEnabled] = useState(true);
-  const [combatSnapshot, setCombatSnapshot] = useState<
-    Pick<
-      VillagePresenceSnapshot,
-      | "monsters"
-      | "selectedTargetEntityId"
-      | "combatResult"
-      | "combatState"
-      | "telegraphs"
-      | "dialogueNode"
-      | "dialogueError"
-      | "questState"
-      | "questReward"
-      | "questError"
-      | "equipmentState"
-      | "equipmentResult"
-      | "previewAppearance"
-      | "serverTimeOffsetMs"
-    >
-  >({
+  const [combatSnapshot, setCombatSnapshot] = useState<CombatSnapshot>({
     monsters: [],
     selectedTargetEntityId: null,
     combatResult: undefined,
@@ -118,7 +181,12 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     equipmentResult: undefined,
     previewAppearance: undefined,
     serverTimeOffsetMs: 0,
+    currentMapId: villageMap.id,
+    activePortalPrompt: null,
+    transitionStatus: "idle",
+    lastTransitionErrorCode: undefined,
   });
+  const renderedMapId = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -143,6 +211,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
 
     void connectDevelopmentVillage(requestedDisplayName(), {
       simulatedLatencyMs,
+      ...requestedSpawnOverride(),
     })
       .then((connectedPresence) => {
         if (!active) return connectedPresence.close();
@@ -151,27 +220,15 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
         setDevelopmentRoomId(connectedPresence.developmentRoomId);
         unsubscribeCombat.current = connectedPresence.subscribe(
           (presenceSnapshot) => {
-            setCombatSnapshot({
-              monsters: presenceSnapshot.monsters,
-              selectedTargetEntityId: presenceSnapshot.selectedTargetEntityId,
-              combatResult: presenceSnapshot.combatResult,
-              combatState: presenceSnapshot.combatState,
-              telegraphs: presenceSnapshot.telegraphs,
-              dialogueNode: presenceSnapshot.dialogueNode,
-              dialogueError: presenceSnapshot.dialogueError,
-              questState: presenceSnapshot.questState,
-              questReward: presenceSnapshot.questReward,
-              questError: presenceSnapshot.questError,
-              equipmentState: presenceSnapshot.equipmentState,
-              equipmentResult: presenceSnapshot.equipmentResult,
-              previewAppearance: presenceSnapshot.previewAppearance,
-              serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
-            });
+            setCombatSnapshot(pickCombatSnapshot(presenceSnapshot));
           },
         );
+        const initialMap = mapArtifactFor(requestedSpawnOverride().mapId);
+        renderedMapId.current = initialMap.id;
         renderer.current = createWorldRenderer(
           worldRoot,
           connectedPresence,
+          initialMap,
           setSnapshot,
         );
       })
@@ -215,27 +272,14 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       setJoined(true);
       unsubscribeCombat.current = connectedPresence.subscribe(
         (presenceSnapshot) => {
-          setCombatSnapshot({
-            monsters: presenceSnapshot.monsters,
-            selectedTargetEntityId: presenceSnapshot.selectedTargetEntityId,
-            combatResult: presenceSnapshot.combatResult,
-            combatState: presenceSnapshot.combatState,
-            telegraphs: presenceSnapshot.telegraphs,
-            dialogueNode: presenceSnapshot.dialogueNode,
-            dialogueError: presenceSnapshot.dialogueError,
-            questState: presenceSnapshot.questState,
-            questReward: presenceSnapshot.questReward,
-            questError: presenceSnapshot.questError,
-            equipmentState: presenceSnapshot.equipmentState,
-            equipmentResult: presenceSnapshot.equipmentResult,
-            previewAppearance: presenceSnapshot.previewAppearance,
-            serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
-          });
+          setCombatSnapshot(pickCombatSnapshot(presenceSnapshot));
         },
       );
+      renderedMapId.current = villageMap.id;
       renderer.current = createWorldRenderer(
         worldRoot,
         connectedPresence,
+        villageMap,
         setSnapshot,
       );
     } catch {
@@ -278,6 +322,26 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   useEffect(() => {
     if (!combatSnapshot.dialogueNode) renderer.current?.focus();
   }, [combatSnapshot.dialogueNode]);
+
+  // React owns swapping the rendered map artifact whenever the presence
+  // snapshot reports a new logical map (i.e. after a portal transition
+  // completes); Phaser only owns the canvas underneath it. The world
+  // renderer itself has no notion of "switch maps" — it is rebuilt fresh
+  // against the new map artifact, same as the initial connect above.
+  useEffect(() => {
+    const connectedPresence = presence.current;
+    if (!connectedPresence) return;
+    if (!combatSnapshot.currentMapId) return;
+    if (renderedMapId.current === combatSnapshot.currentMapId) return;
+    renderedMapId.current = combatSnapshot.currentMapId;
+    renderer.current?.destroy();
+    renderer.current = createWorldRenderer(
+      worldRoot,
+      connectedPresence,
+      mapArtifactFor(combatSnapshot.currentMapId),
+      setSnapshot,
+    );
+  }, [combatSnapshot.currentMapId, worldRoot]);
 
   const estimatedServerTimeMs = clockMs + combatSnapshot.serverTimeOffsetMs;
   const cooldownRemaining = (actionId: string): number =>
@@ -586,6 +650,21 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
             : ""}
         </p>
       </section>
+      {combatSnapshot.lastTransitionErrorCode ? (
+        <p role="alert">{combatSnapshot.lastTransitionErrorCode}</p>
+      ) : null}
+      {combatSnapshot.activePortalPrompt ? (
+        <button
+          type="button"
+          disabled={combatSnapshot.transitionStatus === "pending"}
+          onClick={() => {
+            const portalId = combatSnapshot.activePortalPrompt?.portalId;
+            if (portalId) presence.current?.requestPortalTransition(portalId);
+          }}
+        >
+          {combatSnapshot.activePortalPrompt.label}
+        </button>
+      ) : null}
       <button type="button" onClick={() => renderer.current?.focus()}>
         Return to world
       </button>
