@@ -77,6 +77,42 @@ body,
   border-top: 1px solid rgb(147 184 109 / 40%);
 }
 
+.chat-panel {
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  border: 1px solid rgb(147 184 109 / 40%);
+  border-radius: 0.45rem;
+}
+
+.chat-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.chat-messages {
+  max-height: 9rem;
+  margin: 0 0 0.5rem;
+  padding-left: 1.25rem;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-panel form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.4rem;
+}
+
+.chat-panel label {
+  grid-column: 1 / -1;
+}
+
+.chat-panel input {
+  min-width: 0;
+  font: inherit;
+}
+
 .quest-panel {
   margin: 0.75rem 0;
   padding: 0.75rem;

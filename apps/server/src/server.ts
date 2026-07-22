@@ -29,6 +29,7 @@ import {
 import type { QuestPersistence } from "./quests/persistence.js";
 import type { RewardPersistence } from "./rewards/persistence.js";
 import type { EquipmentPersistence } from "./equipment/persistence.js";
+import { MapChatRateLimiter } from "./chat/map-chat.js";
 
 export interface StartFoundationServerOptions {
   host: string;
@@ -37,6 +38,7 @@ export interface StartFoundationServerOptions {
   allowedOrigin?: string | undefined;
   readinessProbe: ReadinessProbe;
   developmentLoginEnabled?: boolean | undefined;
+  mapChatEnabled?: boolean | undefined;
   accountService?: GuestAccountService | undefined;
   playTickets?: PlayTicketConsumer | undefined;
   runtimeEnvironment?: "development" | "test" | "production" | undefined;
@@ -50,6 +52,14 @@ export interface StartFoundationServerOptions {
         operation: string;
         characterId: string;
         error: unknown;
+      }) => void)
+    | undefined;
+  recordMapChat?:
+    | ((details: {
+        outcome: "accepted" | "rejected";
+        code?: "CHAT_DISABLED" | "INVALID_CHAT_MESSAGE" | "CHAT_RATE_LIMITED";
+        utf8Bytes?: number;
+        lineCount?: number;
       }) => void)
     | undefined;
   checkpointLocation?:
@@ -96,6 +106,13 @@ export async function startFoundationServer(
   ) {
     throw new Error("Development login cannot be enabled in production");
   }
+  if (
+    options.mapChatEnabled &&
+    options.runtimeEnvironment !== "development" &&
+    options.runtimeEnvironment !== "test"
+  ) {
+    throw new Error("Controlled map chat cannot be enabled in production");
+  }
   const developmentPlayTickets = options.developmentLoginEnabled
     ? new DevelopmentPlayTickets(
         options.now === undefined ? undefined : { now: options.now },
@@ -113,6 +130,16 @@ export async function startFoundationServer(
     logger: options.logger,
   });
   await app.ready();
+  const recordMapChat: NonNullable<
+    StartFoundationServerOptions["recordMapChat"]
+  > =
+    options.recordMapChat ??
+    ((details) => {
+      app.log.info(
+        { event: "map_chat", ...details },
+        "Map chat message handled",
+      );
+    });
 
   const fastifyListener = app.server.listeners("request")[0] as
     RequestListener | undefined;
@@ -129,6 +156,7 @@ export async function startFoundationServer(
     gracefullyShutdown: false,
     greet: false,
   });
+  const mapChatRateLimiter = new MapChatRateLimiter();
   gameServer.define("privacy_spike", PrivacySpikeRoom);
   const developmentTransitionTickets = developmentPlayTickets
     ? new DevelopmentTransitionTicketIssuer(developmentPlayTickets)
@@ -178,6 +206,9 @@ export async function startFoundationServer(
             }),
         developmentEquipmentEnabled: options.developmentLoginEnabled === true,
         developmentQuestEnabled: options.developmentLoginEnabled === true,
+        mapChatEnabled: options.mapChatEnabled === true,
+        mapChatRateLimiter,
+        recordMapChat,
         ...(options.checkpointLocation === undefined
           ? {}
           : { checkpointLocation: options.checkpointLocation }),
@@ -200,6 +231,9 @@ export async function startFoundationServer(
           : { checkpointLocation: options.checkpointLocation }),
         ...(transitionTickets === undefined ? {} : { transitionTickets }),
         portalCooldowns,
+        mapChatEnabled: options.mapChatEnabled === true,
+        mapChatRateLimiter,
+        recordMapChat,
         recordLifecycle(event) {
           app.log.info({ event }, "Forest connection lifecycle changed");
         },

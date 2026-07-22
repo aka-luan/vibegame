@@ -20,6 +20,10 @@ const serverConfigSchema = z
       .enum(["true", "false"])
       .default("false")
       .transform((value) => value === "true"),
+    CONTROLLED_MAP_CHAT_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
   })
   .superRefine((config, context) => {
     if (config.NODE_ENV === "production" && config.DEVELOPMENT_LOGIN_ENABLED) {
@@ -27,6 +31,16 @@ const serverConfigSchema = z
         code: "custom",
         path: ["DEVELOPMENT_LOGIN_ENABLED"],
         message: "Development login cannot be enabled in production",
+      });
+    }
+    if (
+      config.NODE_ENV === "production" &&
+      config.CONTROLLED_MAP_CHAT_ENABLED
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["CONTROLLED_MAP_CHAT_ENABLED"],
+        message: "Controlled map chat cannot be enabled in production",
       });
     }
   });

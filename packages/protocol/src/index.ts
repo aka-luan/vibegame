@@ -43,6 +43,9 @@ export const ERROR_CODES = {
   staleCharacterRevision: "STALE_CHARACTER_REVISION",
   equipmentNotEquipped: "EQUIPMENT_NOT_EQUIPPED",
   equipmentPersistenceUnavailable: "EQUIPMENT_PERSISTENCE_UNAVAILABLE",
+  chatDisabled: "CHAT_DISABLED",
+  invalidChatMessage: "INVALID_CHAT_MESSAGE",
+  chatRateLimited: "CHAT_RATE_LIMITED",
   invalidPlayTicket: "INVALID_PLAY_TICKET",
   playTicketExpired: "PLAY_TICKET_EXPIRED",
   playTicketReplayed: "PLAY_TICKET_REPLAYED",
@@ -73,6 +76,7 @@ export const CLIENT_MESSAGES = {
   equipmentEquip: "equipment_equip",
   equipmentUnequip: "equipment_unequip",
   equipmentStateRequest: "equipment_state_request",
+  mapChat: "map_chat",
   portalTransition: "portal_transition",
 } as const;
 
@@ -95,9 +99,31 @@ export const SERVER_MESSAGES = {
   questRejected: "quest_rejected",
   equipmentState: "equipment_state",
   equipmentResult: "equipment_result",
+  chatAvailability: "chat_availability",
+  mapChat: "map_chat",
+  chatRejected: "chat_rejected",
   transitionTicket: "transition_ticket",
   transitionRejected: "transition_rejected",
 } as const;
+
+export interface MapChatIntention {
+  text: string;
+}
+
+export interface MapChatMessage {
+  entityId: string;
+  displayName: string;
+  text: string;
+  serverTimeMs: number;
+}
+
+export interface ChatAvailabilityMessage {
+  enabled: boolean;
+}
+
+export interface ChatRejectedMessage {
+  code: ErrorCode;
+}
 
 export interface MovementIntention {
   x: number;

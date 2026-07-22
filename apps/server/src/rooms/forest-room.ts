@@ -9,6 +9,7 @@ import {
   ERROR_CODES,
   SERVER_MESSAGES,
   type AuthoritativeMovementSnapshot,
+  type MapChatMessage,
   type MovementIntention,
   type PublicAppearance as PublicAppearanceState,
   type PublicForestState,
@@ -21,6 +22,10 @@ import { z } from "zod";
 
 import type { PlayTicketConsumer } from "../identity/play-tickets.js";
 import type { TransitionTicketIssuer } from "../identity/transition-tickets.js";
+import {
+  MapChatRateLimiter,
+  validateMapChatIntention,
+} from "../chat/map-chat.js";
 import { applyFootMovementStep } from "./map-movement.js";
 import {
   PortalCooldownRegistry,
@@ -125,6 +130,14 @@ export function createForestRoom(
     ) => void;
     transitionTickets?: TransitionTicketIssuer;
     portalCooldowns?: PortalCooldownRegistry;
+    mapChatEnabled?: boolean;
+    mapChatRateLimiter?: MapChatRateLimiter;
+    recordMapChat?: (details: {
+      outcome: "accepted" | "rejected";
+      code?: "CHAT_DISABLED" | "INVALID_CHAT_MESSAGE" | "CHAT_RATE_LIMITED";
+      utf8Bytes?: number;
+      lineCount?: number;
+    }) => void;
   } = {},
 ) {
   const transitionTickets: TransitionTicketIssuer =
@@ -147,6 +160,9 @@ export function createForestRoom(
     readonly #now = options.now ?? Date.now;
     readonly #reconnectGraceSeconds = options.reconnectGraceSeconds ?? 5;
     readonly #checkpointLocation = options.checkpointLocation;
+    readonly #mapChatEnabled = options.mapChatEnabled ?? false;
+    readonly #mapChatRateLimiter =
+      options.mapChatRateLimiter ?? new MapChatRateLimiter();
     readonly #playerIdentity = new Map<
       string,
       { userId: string; characterId: string; partyId: string | undefined }
@@ -197,11 +213,76 @@ export function createForestRoom(
           void this.#handlePortalTransition(client, unsafeIntention);
         },
       );
+      this.onMessage(
+        CLIENT_MESSAGES.mapChat,
+        (client, unsafeIntention: unknown) => {
+          this.#handleMapChat(client, unsafeIntention);
+        },
+      );
 
       this.setSimulationInterval(
         () => this.#simulateFixedStep(),
         PLAYER_MOVEMENT.fixedStepMs,
       );
+    }
+
+    #handleMapChat(client: Client, unsafeIntention: unknown): void {
+      if (!this.#mapChatEnabled) {
+        options.recordMapChat?.({ outcome: "rejected", code: "CHAT_DISABLED" });
+        client.send(SERVER_MESSAGES.chatRejected, {
+          code: ERROR_CODES.chatDisabled,
+        });
+        return;
+      }
+      const validation = validateMapChatIntention(unsafeIntention);
+      if (!validation.accepted) {
+        options.recordMapChat?.({
+          outcome: "rejected",
+          code: "INVALID_CHAT_MESSAGE",
+          ...(validation.utf8Bytes === undefined
+            ? {}
+            : { utf8Bytes: validation.utf8Bytes }),
+          ...(validation.lineCount === undefined
+            ? {}
+            : { lineCount: validation.lineCount }),
+        });
+        client.send(SERVER_MESSAGES.chatRejected, {
+          code: ERROR_CODES.invalidChatMessage,
+        });
+        return;
+      }
+      const identity = this.#playerIdentity.get(client.sessionId);
+      const player = this.state.players.get(client.sessionId);
+      if (!identity || !player) return;
+      if (
+        !this.#mapChatRateLimiter.allow(
+          identity.userId,
+          this.state.serverTimeMs,
+        )
+      ) {
+        options.recordMapChat?.({
+          outcome: "rejected",
+          code: "CHAT_RATE_LIMITED",
+          utf8Bytes: validation.utf8Bytes,
+          lineCount: validation.lineCount,
+        });
+        client.send(SERVER_MESSAGES.chatRejected, {
+          code: ERROR_CODES.chatRateLimited,
+        });
+        return;
+      }
+      const message: MapChatMessage = {
+        entityId: client.sessionId,
+        displayName: player.displayName,
+        text: validation.text,
+        serverTimeMs: this.state.serverTimeMs,
+      };
+      options.recordMapChat?.({
+        outcome: "accepted",
+        utf8Bytes: validation.utf8Bytes,
+        lineCount: validation.lineCount,
+      });
+      this.broadcast(SERVER_MESSAGES.mapChat, message);
     }
 
     async #handlePortalTransition(
@@ -310,6 +391,9 @@ export function createForestRoom(
       this.#lastProcessedSequences.set(client.sessionId, 0);
       this.#intentionViolations.set(client.sessionId, 0);
       void this.#checkpoint(client.sessionId, "online");
+      client.send(SERVER_MESSAGES.chatAvailability, {
+        enabled: this.#mapChatEnabled,
+      });
     }
 
     override onLeave(client: Client) {
