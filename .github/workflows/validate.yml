@@ -3,6 +3,8 @@ name: Validate
 on:
   pull_request:
   push:
+    branches:
+      - main
 
 env:
   NODE_VERSION: 24.18.0
