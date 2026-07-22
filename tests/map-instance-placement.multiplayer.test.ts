@@ -1,5 +1,5 @@
 import { Client, type Room } from "@colyseus/sdk";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   startFoundationServer,
@@ -64,6 +64,18 @@ async function joinVillage(
   return room;
 }
 
+function countPlayers(state: PublicVillageState): number {
+  let count = 0;
+  state.players?.forEach(() => {
+    count += 1;
+  });
+  return count;
+}
+
+async function waitUntil(assertion: () => void) {
+  await vi.waitFor(assertion, { timeout: 3_000, interval: 20 });
+}
+
 async function inspect(endpoint: string) {
   const response = await fetch(`${endpoint}/development/instances`);
   expect(response.status).toBe(200);
@@ -87,12 +99,10 @@ describe("headless map-instance placement", () => {
     const second = await joinVillage(endpoint, "Second Overflow Ranger");
 
     expect(first.roomId).not.toBe(second.roomId);
-    expect(
-      Object.keys((first.state as PublicVillageState).players),
-    ).toHaveLength(1);
-    expect(
-      Object.keys((second.state as PublicVillageState).players),
-    ).toHaveLength(1);
+    await waitUntil(() => {
+      expect(countPlayers(first.state as PublicVillageState)).toBe(1);
+      expect(countPlayers(second.state as PublicVillageState)).toBe(1);
+    });
 
     const diagnostics = await inspect(endpoint);
     expect(diagnostics.instances).toHaveLength(2);
