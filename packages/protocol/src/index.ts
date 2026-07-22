@@ -34,6 +34,15 @@ export const ERROR_CODES = {
   questTransitionInvalid: "QUEST_TRANSITION_INVALID",
   questObjectiveInvalid: "QUEST_OBJECTIVE_INVALID",
   questPersistenceUnavailable: "QUEST_PERSISTENCE_UNAVAILABLE",
+  invalidEquipmentIntention: "INVALID_EQUIPMENT_INTENTION",
+  equipmentItemNotFound: "EQUIPMENT_ITEM_NOT_FOUND",
+  itemNotOwned: "ITEM_NOT_OWNED",
+  incompatibleEquipment: "INCOMPATIBLE_EQUIPMENT",
+  equipmentRequirementsNotMet: "EQUIPMENT_REQUIREMENTS_NOT_MET",
+  equipmentAlreadyEquipped: "EQUIPMENT_ALREADY_EQUIPPED",
+  staleCharacterRevision: "STALE_CHARACTER_REVISION",
+  equipmentNotEquipped: "EQUIPMENT_NOT_EQUIPPED",
+  equipmentPersistenceUnavailable: "EQUIPMENT_PERSISTENCE_UNAVAILABLE",
   invalidPlayTicket: "INVALID_PLAY_TICKET",
   playTicketExpired: "PLAY_TICKET_EXPIRED",
   playTicketReplayed: "PLAY_TICKET_REPLAYED",
@@ -54,6 +63,9 @@ export const CLIENT_MESSAGES = {
   dialogueChoice: "dialogue_choice",
   dialogueClose: "dialogue_close",
   questStateRequest: "quest_state_request",
+  equipmentEquip: "equipment_equip",
+  equipmentUnequip: "equipment_unequip",
+  equipmentStateRequest: "equipment_state_request",
 } as const;
 
 export const SERVER_MESSAGES = {
@@ -73,6 +85,8 @@ export const SERVER_MESSAGES = {
   questState: "quest_state",
   questReward: "quest_reward",
   questRejected: "quest_rejected",
+  equipmentState: "equipment_state",
+  equipmentResult: "equipment_result",
 } as const;
 
 export interface MovementIntention {
@@ -108,6 +122,7 @@ export interface PublicPlayerState {
   y: number;
   facing: "east" | "west";
   animation: "idle" | "walk";
+  appearanceRevision: number;
   appearance: PublicAppearance;
 }
 
@@ -115,6 +130,40 @@ export interface PublicPlayerPresence extends PublicPlayerState {
   entityId: string;
 }
 
+export type EquipmentSlot = "body";
+
+export interface EquipmentStateMessage {
+  characterRevision: number;
+  appearanceRevision: number;
+  appearance: PublicAppearance;
+  inventory: { itemId: string; quantity: number }[];
+  equipment: { slot: EquipmentSlot; itemId: string }[];
+}
+
+export interface EquipEquipmentIntention {
+  actionId: string;
+  itemId: string;
+  expectedCharacterRevision: number;
+}
+
+export interface UnequipEquipmentIntention {
+  actionId: string;
+  slot: EquipmentSlot;
+  expectedCharacterRevision: number;
+}
+
+export type EquipmentResult =
+  | {
+      accepted: true;
+      actionId: string;
+      state: EquipmentStateMessage;
+    }
+  | {
+      accepted: false;
+      actionId: string;
+      code: ErrorCode;
+      state?: EquipmentStateMessage;
+    };
 export interface TargetSelectionIntention {
   targetEntityId: string;
 }

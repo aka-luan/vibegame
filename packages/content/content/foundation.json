@@ -68,6 +68,26 @@
       }
     }
   ],
+  "equipment": {
+    "schemaVersion": 1,
+    "items": [
+      {
+        "id": "item:trailwarden_tunic",
+        "slot": "body",
+        "clientVisible": {
+          "displayName": "Trailwarden Tunic",
+          "layerId": "tunic"
+        },
+        "serverOnly": {
+          "rigId": "rig:village_placeholder",
+          "requirements": {
+            "minimumLevel": 1,
+            "classId": "class:trailwarden"
+          }
+        }
+      }
+    ]
+  },
   "combat": {
     "schemaVersion": 1,
     "classes": [
@@ -270,7 +290,7 @@
       {
         "id": "loot:mossback_cache",
         "monsterId": "monster:mossback",
-        "entries": [{ "id": "item:mossback_scale", "weight": 1 }]
+        "entries": [{ "id": "item:trailwarden_tunic", "weight": 1 }]
       }
     ]
   },

@@ -1,6 +1,7 @@
 import type Phaser from "phaser";
 
 import villageCharacter from "@gameish/content/village-character";
+import { resolveAppearanceLayerIds } from "@gameish/content/character-manifest";
 import type { PublicAppearance } from "@gameish/protocol";
 
 export type Facing = "east" | "west";
@@ -8,6 +9,7 @@ export type CharacterState = "idle" | "walk";
 
 export interface CharacterRenderer {
   readonly display: Phaser.GameObjects.Container;
+  applyAppearance(appearance: PublicAppearance): void;
   applyFacing(facing: Facing): void;
   play(state: CharacterState): void;
   setFootPosition(x: number, y: number): void;
@@ -59,7 +61,9 @@ function isMirrored(facing: Facing): boolean {
 
 export class ManifestCharacterRenderer implements CharacterRenderer {
   readonly display: Phaser.GameObjects.Container;
-  readonly #sprites: { layerId: string; sprite: Phaser.GameObjects.Sprite }[];
+  #sprites: { layerId: string; sprite: Phaser.GameObjects.Sprite }[] = [];
+  readonly #layerContainer: Phaser.GameObjects.Container;
+  #appearanceKey = "";
   #facing: Facing = "east";
   #state: CharacterState = "idle";
 
@@ -80,37 +84,46 @@ export class ManifestCharacterRenderer implements CharacterRenderer {
         padding: { x: 2, y: 1 },
       })
       .setOrigin(0.5, 1);
-    if (appearance && appearance.rigId !== villageCharacter.id) {
-      throw new Error(`Unsupported public rig: ${appearance.rigId}`);
-    }
-    const visibleLayerIds = appearance
-      ? new Set([appearance.baseLayerId, appearance.armorLayerId])
-      : undefined;
-    const orderedLayers = villageCharacter.layers
-      .filter((layer) => visibleLayerIds?.has(layer.id) ?? true)
-      .sort((first, second) => first.depth - second.depth);
-    this.#sprites = orderedLayers.map((layer) => {
-      const source = sourceForLayer(layer.id);
-      const sprite = scene.add
+    this.#layerContainer = scene.add.container(0, 0);
+    this.display = scene.add.container(x, y, [
+      shadow,
+      this.#layerContainer,
+      nameLabel,
+    ]);
+    this.display.setScale(villageCharacter.displayScale);
+    this.applyAppearance(
+      appearance ?? {
+        rigId: villageCharacter.id,
+        baseLayerId: "base",
+        armorLayerId: "",
+      },
+    );
+    this.setFootPosition(x, y);
+  }
+
+  applyAppearance(appearance: PublicAppearance): void {
+    const layerIds = resolveAppearanceLayerIds(villageCharacter, appearance);
+    const appearanceKey = layerIds.join("|");
+    if (appearanceKey === this.#appearanceKey) return;
+    this.#appearanceKey = appearanceKey;
+    this.#layerContainer.removeAll(true);
+    this.#sprites = layerIds.map((layerId) => {
+      const source = sourceForLayer(layerId);
+      const sprite = this.#layerContainer.scene.add
         .sprite(
           0,
           0,
-          textureKey(layer.id),
+          textureKey(layerId),
           facingRow("east") * source.frameColumns,
         )
         .setOrigin(
           villageCharacter.footOrigin.x / villageCharacter.canvas.width,
           villageCharacter.footOrigin.y / villageCharacter.canvas.height,
         );
-      return { layerId: layer.id, sprite };
+      this.#layerContainer.add(sprite);
+      return { layerId, sprite };
     });
-    this.display = scene.add.container(x, y, [
-      shadow,
-      ...this.#sprites.map(({ sprite }) => sprite),
-      nameLabel,
-    ]);
-    this.display.setScale(villageCharacter.displayScale);
-    this.setFootPosition(x, y);
+    this.applyFacing(this.#facing);
   }
 
   applyFacing(facing: Facing): void {

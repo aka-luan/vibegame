@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { validateCharacterManifest } from "./character-manifest.js";
+import {
+  resolveAppearanceLayerIds,
+  type CharacterManifest,
+  validateCharacterManifest,
+} from "./character-manifest.js";
 
 const requiredAnimations = [
   "idle",
@@ -162,5 +166,39 @@ describe("character manifest validation", () => {
         },
       ],
     });
+  });
+
+  it("resolves preview and world layers in manifest depth order", () => {
+    const input = validManifest();
+    expect(
+      resolveAppearanceLayerIds(input, {
+        rigId: "rig:village_placeholder",
+        baseLayerId: "base",
+        armorLayerId: "tunic",
+      }),
+    ).toEqual(["base", "tunic"]);
+  });
+
+  it("uses the base layer when selected armor art is missing", () => {
+    expect(
+      resolveAppearanceLayerIds(validManifest(), {
+        rigId: "rig:village_placeholder",
+        baseLayerId: "base",
+        armorLayerId: "removed_armor",
+      }),
+    ).toEqual(["base"]);
+  });
+
+  it("keeps a declared armor layer when its art falls back to the base sheet", () => {
+    const input = validManifest() as unknown as CharacterManifest;
+    input.layers[1]!.source = null;
+    expect(validateCharacterManifest(input)).toEqual({ success: true });
+    expect(
+      resolveAppearanceLayerIds(input, {
+        rigId: "rig:village_placeholder",
+        baseLayerId: "base",
+        armorLayerId: "tunic",
+      }),
+    ).toEqual(["base", "tunic"]);
   });
 });

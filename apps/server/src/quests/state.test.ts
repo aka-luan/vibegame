@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { transitionQuest, type QuestSnapshot } from "./state.js";
+import {
+  transitionQuest,
+  type QuestObjective,
+  type QuestSnapshot,
+} from "./state.js";
 
 const objective = {
   kind: "kill" as const,
@@ -28,7 +32,11 @@ describe("quest state machine", () => {
       },
       "ready",
     ],
-    ["ready", { kind: "complete" as const }, "completed"],
+    [
+      "ready",
+      { kind: "complete" as const, completionId: "quest-completion:1" },
+      "completed",
+    ],
   ] as const)("allows %s to transition to %s", (status, event, nextStatus) => {
     const snapshot = { ...available(), status } as QuestSnapshot;
     const result = transitionQuest(snapshot, { objective }, event);
@@ -42,7 +50,7 @@ describe("quest state machine", () => {
     const result = transitionQuest(
       available(),
       { objective },
-      { kind: "complete" },
+      { kind: "complete", completionId: "quest-completion:1" },
     );
     expect(result).toMatchObject({
       applied: false,
@@ -59,7 +67,10 @@ describe("quest state machine", () => {
         targetId: objective.targetId,
       },
     ],
-    ["active", { kind: "complete" as const }],
+    [
+      "active",
+      { kind: "complete" as const, completionId: "quest-completion:1" },
+    ],
     ["completed", { kind: "accept" as const }],
   ] as const)("rejects the illegal %s transition", (status, transition) => {
     const result = transitionQuest(
@@ -115,6 +126,28 @@ describe("quest state machine", () => {
     expect(wrongTarget).toMatchObject({
       applied: false,
       reason: "objective_mismatch",
+    });
+  });
+
+  it("rejects an objective transition whose objective kind is not kill even when the target matches", () => {
+    const active = { ...available(), status: "active" as const };
+    const nonKillObjective = {
+      kind: "other",
+      targetId: objective.targetId,
+      requiredCount: 1,
+    } as unknown as QuestObjective;
+    const result = transitionQuest(
+      active,
+      { objective: nonKillObjective },
+      {
+        kind: "objective",
+        eventId: "defeat:1",
+        targetId: objective.targetId,
+      },
+    );
+    expect(result).toMatchObject({
+      applied: false,
+      reason: "illegal_transition",
     });
   });
 });

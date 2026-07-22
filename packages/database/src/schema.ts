@@ -73,6 +73,7 @@ export const characterAppearance = pgTable("character_appearance", {
   rigId: text("rig_id").notNull(),
   baseLayerId: text("base_layer_id").notNull(),
   armorLayerId: text("armor_layer_id").notNull(),
+  appearanceRevision: integer("appearance_revision").notNull().default(0),
   ...timestamps(),
 });
 

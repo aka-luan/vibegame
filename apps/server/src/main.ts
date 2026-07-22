@@ -13,6 +13,7 @@ import {
   PostgresQuestPersistence,
   PostgresRewardPersistence,
 } from "./persistence/durable-state.js";
+import { PostgresEquipmentPersistence } from "./equipment/persistence.js";
 
 const config = parseServerConfig(process.env);
 await assertCanonicalContent();
@@ -23,6 +24,7 @@ const accountService = new GuestAccountService(accountRepository);
 const playTickets = new DatabasePlayTickets(accountRepository);
 const questPersistence = new PostgresQuestPersistence(durableState);
 const rewardPersistence = new PostgresRewardPersistence(durableState);
+const equipmentPersistence = new PostgresEquipmentPersistence(durableState);
 const publicAddress =
   config.PUBLIC_GAME_SERVER_ADDRESS ??
   (config.DEVELOPMENT_LOGIN_ENABLED
@@ -38,6 +40,7 @@ const server = await startFoundationServer({
   playTickets,
   questPersistence,
   rewardPersistence,
+  equipmentPersistence,
   checkpointLocation: (input) => durableState.checkpointLocation(input),
   developmentLoginEnabled: config.DEVELOPMENT_LOGIN_ENABLED,
   runtimeEnvironment: config.NODE_ENV,

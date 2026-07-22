@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import villageCombat from "@gameish/content/village-combat";
+import villageEquipment from "@gameish/content/village-equipment";
 
 import {
   connectDevelopmentVillage,
@@ -97,6 +98,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       | "questState"
       | "questReward"
       | "questError"
+      | "equipmentState"
+      | "equipmentResult"
+      | "previewAppearance"
       | "serverTimeOffsetMs"
     >
   >({
@@ -110,6 +114,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     questState: undefined,
     questReward: undefined,
     questError: undefined,
+    equipmentState: undefined,
+    equipmentResult: undefined,
+    previewAppearance: undefined,
     serverTimeOffsetMs: 0,
   });
 
@@ -155,6 +162,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
               questState: presenceSnapshot.questState,
               questReward: presenceSnapshot.questReward,
               questError: presenceSnapshot.questError,
+              equipmentState: presenceSnapshot.equipmentState,
+              equipmentResult: presenceSnapshot.equipmentResult,
+              previewAppearance: presenceSnapshot.previewAppearance,
               serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
             });
           },
@@ -216,6 +226,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
             questState: presenceSnapshot.questState,
             questReward: presenceSnapshot.questReward,
             questError: presenceSnapshot.questError,
+            equipmentState: presenceSnapshot.equipmentState,
+            equipmentResult: presenceSnapshot.equipmentResult,
+            previewAppearance: presenceSnapshot.previewAppearance,
             serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
           });
         },
@@ -397,6 +410,95 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
           </>
         ) : (
           <p>Loading quest state…</p>
+        )}
+      </section>
+      <section aria-labelledby="equipment-heading" className="equipment-panel">
+        <h2 id="equipment-heading">Inventory and equipment</h2>
+        {combatSnapshot.equipmentState ? (
+          <>
+            <p>
+              Appearance revision{" "}
+              {combatSnapshot.equipmentState.appearanceRevision}.
+            </p>
+            <ul className="equipment-list">
+              {combatSnapshot.equipmentState.inventory.map((entry) => {
+                const definition = villageEquipment.items.find(
+                  (item) => item.id === entry.itemId,
+                );
+                const equipped = combatSnapshot.equipmentState?.equipment.some(
+                  (item) => item.itemId === entry.itemId,
+                );
+                return (
+                  <li
+                    key={entry.itemId}
+                    data-testid={`inventory-${entry.itemId}`}
+                  >
+                    <span>
+                      {definition?.displayName ?? entry.itemId} ×
+                      {entry.quantity}
+                    </span>
+                    {definition ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const appearance =
+                              combatSnapshot.equipmentState?.appearance;
+                            if (!appearance) return;
+                            presence.current?.previewAppearance({
+                              ...appearance,
+                              armorLayerId: definition.layerId,
+                            });
+                          }}
+                        >
+                          Preview
+                        </button>
+                        {equipped ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              presence.current?.unequipItem("body")
+                            }
+                          >
+                            Unequip
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              presence.current?.equipItem(entry.itemId)
+                            }
+                          >
+                            Equip
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <span>Not wearable</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+            {combatSnapshot.previewAppearance ? (
+              <p role="status">
+                Previewing{" "}
+                {combatSnapshot.previewAppearance.armorLayerId || "no armor"}.{" "}
+                <button
+                  type="button"
+                  onClick={() => presence.current?.previewAppearance(undefined)}
+                >
+                  Clear preview
+                </button>
+              </p>
+            ) : null}
+            {combatSnapshot.equipmentResult &&
+            !combatSnapshot.equipmentResult.accepted ? (
+              <p role="alert">{combatSnapshot.equipmentResult.code}</p>
+            ) : null}
+          </>
+        ) : (
+          <p>Loading inventory…</p>
         )}
       </section>
       <section aria-labelledby="combat-heading" className="combat-panel">

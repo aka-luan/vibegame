@@ -199,6 +199,52 @@ export const characterManifestSchema = z
 
 export type CharacterManifest = z.infer<typeof characterManifestSchema>;
 
+export interface CharacterAppearanceSelection {
+  rigId: string;
+  baseLayerId: string;
+  armorLayerId: string;
+}
+
+/**
+ * Resolve the same ordered layer selection for previews and world entities.
+ * Unknown optional armor is treated as unequipped so a stale or missing asset
+ * cannot take down the renderer. The manifest's layer fallback still decides
+ * which source supplies the pixels.
+ */
+export function resolveAppearanceLayerIds(
+  manifest: {
+    id: string;
+    layers: readonly { id: string; depth: number }[];
+  },
+  appearance: CharacterAppearanceSelection,
+): string[] {
+  if (appearance.rigId !== manifest.id) return [];
+  const baseLayer = manifest.layers.find(
+    (layer) => layer.id === appearance.baseLayerId,
+  );
+  const fallbackBase =
+    baseLayer ?? manifest.layers.find((layer) => layer.id === "base");
+  if (!fallbackBase) return [];
+
+  const requested = [fallbackBase.id];
+  if (
+    appearance.armorLayerId &&
+    appearance.armorLayerId !== fallbackBase.id &&
+    manifest.layers.some((layer) => layer.id === appearance.armorLayerId)
+  ) {
+    requested.push(appearance.armorLayerId);
+  }
+  return requested.sort((first, second) => {
+    const firstDepth = manifest.layers.find(
+      (layer) => layer.id === first,
+    )?.depth;
+    const secondDepth = manifest.layers.find(
+      (layer) => layer.id === second,
+    )?.depth;
+    return (firstDepth ?? 0) - (secondDepth ?? 0);
+  });
+}
+
 export type CharacterManifestValidationResult =
   { success: true } | { success: false; issues: ContentValidationIssue[] };
 

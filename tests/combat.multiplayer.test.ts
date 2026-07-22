@@ -159,11 +159,11 @@ describe("authoritative combat room boundary", () => {
     expect(spectatorRewards).toEqual([]);
     expect(firstRewards[0]).toEqual({
       sourceMonsterId: "monster:mossback",
-      items: [{ itemId: "item:mossback_scale", quantity: 1 }],
+      items: [{ itemId: "item:trailwarden_tunic", quantity: 1 }],
     });
     expect(secondRewards[0]).toEqual({
       sourceMonsterId: "monster:mossback",
-      items: [{ itemId: "item:mossback_scale", quantity: 1 }],
+      items: [{ itemId: "item:trailwarden_tunic", quantity: 1 }],
     });
     expect(JSON.stringify(spectator.state)).not.toContain("reward_summary");
   });

@@ -21,6 +21,7 @@ import { PrivacySpikeRoom } from "./rooms/privacy-spike-room.js";
 import { createVillageRoom } from "./rooms/village-room.js";
 import type { QuestPersistence } from "./quests/persistence.js";
 import type { RewardPersistence } from "./rewards/persistence.js";
+import type { EquipmentPersistence } from "./equipment/persistence.js";
 
 export interface StartFoundationServerOptions {
   host: string;
@@ -36,6 +37,14 @@ export interface StartFoundationServerOptions {
   reconnectGraceSeconds?: number | undefined;
   rewardPersistence?: RewardPersistence | undefined;
   questPersistence?: QuestPersistence | undefined;
+  equipmentPersistence?: EquipmentPersistence | undefined;
+  logEquipmentPersistenceFailure?:
+    | ((details: {
+        operation: string;
+        characterId: string;
+        error: unknown;
+      }) => void)
+    | undefined;
   checkpointLocation?:
     ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
   logger?: boolean | undefined;
@@ -127,6 +136,27 @@ export async function startFoundationServer(
         ...(options.questPersistence === undefined
           ? {}
           : { questPersistence: options.questPersistence }),
+        ...(options.equipmentPersistence === undefined
+          ? {}
+          : { equipmentPersistence: options.equipmentPersistence }),
+        ...(options.logEquipmentPersistenceFailure === undefined
+          ? {
+              logEquipmentPersistenceFailure(details) {
+                app.log.error(
+                  {
+                    event: "equipment_persistence_failure",
+                    ...details,
+                  },
+                  "Equipment persistence operation failed",
+                );
+              },
+            }
+          : {
+              logEquipmentPersistenceFailure:
+                options.logEquipmentPersistenceFailure,
+            }),
+        developmentEquipmentEnabled: options.developmentLoginEnabled === true,
+        developmentQuestEnabled: options.developmentLoginEnabled === true,
         ...(options.checkpointLocation === undefined
           ? {}
           : { checkpointLocation: options.checkpointLocation }),

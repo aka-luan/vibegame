@@ -3,6 +3,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { characterManifestSchema } from "./character-manifest.js";
 import { compileClientCombatCatalog } from "./combat.js";
 import {
+  compileClientEquipmentCatalog,
+  validateEquipmentManifestCompatibility,
+} from "./equipment.js";
+import {
   compileClientDialogueCatalog,
   validateDialogueInteractiveBindings,
 } from "./dialogue.js";
@@ -28,6 +32,7 @@ async function compileCanonicalAssets(): Promise<void> {
     !parsedContent.success ||
     !parsedContent.data.combat ||
     !parsedContent.data.dialogue ||
+    !parsedContent.data.equipment ||
     !parsedContent.data.quests
   ) {
     throw new Error(
@@ -36,9 +41,11 @@ async function compileCanonicalAssets(): Promise<void> {
   }
   const parsedCombat = parsedContent.data.combat;
   const parsedDialogue = parsedContent.data.dialogue;
+  const parsedEquipment = parsedContent.data.equipment;
   const parsedQuests = parsedContent.data.quests;
   const clientCombat = compileClientCombatCatalog(parsedCombat);
   const clientDialogue = compileClientDialogueCatalog(parsedDialogue);
+  const clientEquipment = compileClientEquipmentCatalog(parsedEquipment);
   const clientQuests = compileClientQuestCatalog(parsedQuests);
 
   const manifest = characterManifestSchema.safeParse(
@@ -47,6 +54,17 @@ async function compileCanonicalAssets(): Promise<void> {
   if (!manifest.success) {
     throw new Error(
       `Village character manifest failed:\n${manifest.error.message}`,
+    );
+  }
+  const equipmentManifestIssues = validateEquipmentManifestCompatibility(
+    parsedEquipment,
+    manifest.data,
+  );
+  if (equipmentManifestIssues.length > 0) {
+    throw new Error(
+      `Equipment manifest bindings failed:\n${equipmentManifestIssues
+        .map((issue) => `${issue.path}: ${issue.message}`)
+        .join("\n")}`,
     );
   }
 
@@ -108,6 +126,14 @@ async function compileCanonicalAssets(): Promise<void> {
     writeFile(
       new URL("village-dialogue.js", artifactDirectory),
       moduleSource(clientDialogue),
+    ),
+    writeFile(
+      new URL("village-equipment-server.js", artifactDirectory),
+      moduleSource(parsedEquipment),
+    ),
+    writeFile(
+      new URL("village-equipment.js", artifactDirectory),
+      moduleSource(clientEquipment),
     ),
     writeFile(
       new URL("village-quests-server.js", artifactDirectory),

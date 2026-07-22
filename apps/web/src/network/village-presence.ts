@@ -9,6 +9,8 @@ import {
   type CombatStateMessage,
   type CombatTelegraphMessage,
   type CombatResult,
+  type EquipmentResult,
+  type EquipmentStateMessage,
   type DialogueNodeMessage,
   type ErrorCode,
   type MovementIntention,
@@ -144,6 +146,48 @@ const questRewardSchema = z
     currency: z.number().int().nonnegative(),
   })
   .strict();
+const equipmentAppearanceSchema = z
+  .object({
+    rigId: z.string().min(1),
+    baseLayerId: z.string().min(1),
+    armorLayerId: z.string(),
+  })
+  .strict();
+const equipmentStateSchema = z
+  .object({
+    characterRevision: z.number().int().nonnegative(),
+    appearanceRevision: z.number().int().nonnegative(),
+    appearance: equipmentAppearanceSchema,
+    inventory: z.array(
+      z
+        .object({
+          itemId: z.string().min(1),
+          quantity: z.number().int().nonnegative(),
+        })
+        .strict(),
+    ),
+    equipment: z.array(
+      z.object({ slot: z.literal("body"), itemId: z.string().min(1) }).strict(),
+    ),
+  })
+  .strict();
+const equipmentResultSchema = z.discriminatedUnion("accepted", [
+  z
+    .object({
+      accepted: z.literal(true),
+      actionId: z.string(),
+      state: equipmentStateSchema,
+    })
+    .strict(),
+  z
+    .object({
+      accepted: z.literal(false),
+      actionId: z.string(),
+      code: errorCodeSchema,
+      state: equipmentStateSchema.optional(),
+    })
+    .strict(),
+]);
 
 export interface VillagePresenceSnapshot {
   localEntityId: string;
@@ -161,6 +205,9 @@ export interface VillagePresenceSnapshot {
   questState: QuestStateMessage | undefined;
   questReward: QuestRewardMessage | undefined;
   questError: ErrorCode | undefined;
+  equipmentState: EquipmentStateMessage | undefined;
+  equipmentResult: EquipmentResult | undefined;
+  previewAppearance: PublicPlayerPresence["appearance"] | undefined;
   serverTimeOffsetMs: number;
 }
 
@@ -171,6 +218,11 @@ export interface VillagePresence {
   selectTarget(targetEntityId: string): void;
   basicAttack(): void;
   useAbility(abilityId: string): void;
+  equipItem(itemId: string): void;
+  unequipItem(slot: "body"): void;
+  previewAppearance(
+    appearance: PublicPlayerPresence["appearance"] | undefined,
+  ): void;
   interact(interactiveId: string): void;
   selectDialogueChoice(npcId: string, nodeId: string, choiceId: string): void;
   closeDialogue(): void;
@@ -219,6 +271,9 @@ export async function connectVillageWithTicket(
   let questState: QuestStateMessage | undefined;
   let questReward: QuestRewardMessage | undefined;
   let questError: ErrorCode | undefined;
+  let equipmentState: EquipmentStateMessage | undefined;
+  let equipmentResult: EquipmentResult | undefined;
+  let previewAppearance: PublicPlayerPresence["appearance"] | undefined;
   let serverTimeOffsetMs = 0;
   const serverClock = new ServerTimeEstimator();
 
@@ -254,6 +309,7 @@ export async function connectVillageWithTicket(
         y: player.y,
         facing: player.facing,
         animation: player.animation,
+        appearanceRevision: player.appearanceRevision,
         appearance: {
           rigId: player.appearance.rigId,
           baseLayerId: player.appearance.baseLayerId,
@@ -288,6 +344,9 @@ export async function connectVillageWithTicket(
       questState,
       questReward,
       questError,
+      equipmentState,
+      equipmentResult,
+      previewAppearance,
       serverTimeOffsetMs,
     };
     afterNetworkDelay(() => {
@@ -400,7 +459,22 @@ export async function connectVillageWithTicket(
     questError = rejection.data.code;
     publish(room.state);
   });
+  room.onMessage<unknown>(SERVER_MESSAGES.equipmentState, (unsafeState) => {
+    const state = equipmentStateSchema.safeParse(unsafeState);
+    if (!state.success) return;
+    equipmentState = state.data;
+    publish(room.state);
+  });
+  room.onMessage<unknown>(SERVER_MESSAGES.equipmentResult, (unsafeResult) => {
+    const result = equipmentResultSchema.safeParse(unsafeResult);
+    if (!result.success) return;
+    equipmentResult = result.data as EquipmentResult;
+    if (result.data.state) equipmentState = result.data.state;
+    if (result.data.accepted) previewAppearance = undefined;
+    publish(room.state);
+  });
   room.send(CLIENT_MESSAGES.questStateRequest);
+  room.send(CLIENT_MESSAGES.equipmentStateRequest);
   room.onDrop(() => {
     connectionStatus = "reconnecting";
     publish(room.state);
@@ -447,6 +521,30 @@ export async function connectVillageWithTicket(
           targetEntityId,
         }),
       );
+    },
+    equipItem(itemId) {
+      const expectedCharacterRevision = equipmentState?.characterRevision ?? 0;
+      afterNetworkDelay(() =>
+        room.send(CLIENT_MESSAGES.equipmentEquip, {
+          actionId: crypto.randomUUID(),
+          itemId,
+          expectedCharacterRevision,
+        }),
+      );
+    },
+    unequipItem(slot) {
+      const expectedCharacterRevision = equipmentState?.characterRevision ?? 0;
+      afterNetworkDelay(() =>
+        room.send(CLIENT_MESSAGES.equipmentUnequip, {
+          actionId: crypto.randomUUID(),
+          slot,
+          expectedCharacterRevision,
+        }),
+      );
+    },
+    previewAppearance(appearance) {
+      previewAppearance = appearance;
+      publish(room.state);
     },
     interact(interactiveId) {
       afterNetworkDelay(() =>

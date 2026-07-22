@@ -164,6 +164,60 @@ describe("village public presence", () => {
     });
   });
 
+  it("keeps inventory private while broadcasting only the equipped appearance", async () => {
+    const endpoint = await startDevelopmentServer();
+    const player = await joinVillage(endpoint, "Equipment Ranger");
+    const observer = await joinVillage(endpoint, "Appearance Observer");
+    let privateState:
+      | {
+          characterRevision: number;
+          inventory: { itemId: string; quantity: number }[];
+          equipment: { slot: string; itemId: string }[];
+        }
+      | undefined;
+    let latestResult: { accepted: boolean; code?: string } | undefined;
+    player.onMessage(SERVER_MESSAGES.equipmentState, (state) => {
+      privateState = state as typeof privateState;
+    });
+    player.onMessage(SERVER_MESSAGES.equipmentResult, (result) => {
+      latestResult = result as typeof latestResult;
+    });
+    player.send(CLIENT_MESSAGES.equipmentStateRequest);
+    await waitUntil(() => {
+      expect(privateState?.inventory).toContainEqual({
+        itemId: "item:trailwarden_tunic",
+        quantity: 1,
+      });
+    });
+
+    const initialRevision = privateState?.characterRevision ?? 0;
+    player.send(CLIENT_MESSAGES.equipmentEquip, {
+      actionId: "equipment-equip-already-equipped",
+      itemId: "item:trailwarden_tunic",
+      expectedCharacterRevision: initialRevision,
+    });
+    await waitUntil(() => {
+      expect(latestResult).toMatchObject({
+        accepted: false,
+        actionId: "equipment-equip-already-equipped",
+        code: ERROR_CODES.equipmentAlreadyEquipped,
+      });
+    });
+    player.send(CLIENT_MESSAGES.equipmentUnequip, {
+      actionId: "equipment-unequip",
+      slot: "body",
+      expectedCharacterRevision: initialRevision,
+    });
+    await waitUntil(() => expect(latestResult?.accepted).toBe(true));
+    await waitUntil(() => {
+      const observerState = JSON.stringify(observer.state);
+      expect(observerState).toContain('"armorLayerId":""');
+      expect(observerState).toContain('"appearanceRevision":1');
+      expect(observerState).not.toContain("item:trailwarden_tunic");
+      expect(observerState).not.toMatch(/inventory|equipment/);
+    });
+  });
+
   it("converges on fixed-step authoritative movement", async () => {
     const endpoint = await startDevelopmentServer();
     const first = await joinVillage(endpoint, "Moving Ranger");
