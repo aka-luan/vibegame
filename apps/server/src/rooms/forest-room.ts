@@ -248,9 +248,7 @@ export function createForestRoom(
       if (consumption.admission.logicalDestination !== forestSlice.mapId) {
         throw new ServerError(4_224, ERROR_CODES.destinationNotAllowed);
       }
-      if (
-        consumption.admission.contentVersion !== forestSlice.contentVersion
-      ) {
+      if (consumption.admission.contentVersion !== forestSlice.contentVersion) {
         throw new ServerError(4_225, ERROR_CODES.staleContentVersion);
       }
 

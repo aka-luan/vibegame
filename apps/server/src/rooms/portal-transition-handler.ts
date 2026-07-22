@@ -2,7 +2,10 @@ import type { ServerMapArtifact } from "@gameish/content";
 import { ERROR_CODES, type ErrorCode } from "@gameish/protocol";
 
 import type { TransitionTicketIssuer } from "../identity/transition-tickets.js";
-import { evaluatePortalTransition, portalTransitionSchema } from "./portal-transition.js";
+import {
+  evaluatePortalTransition,
+  portalTransitionSchema,
+} from "./portal-transition.js";
 
 export type PortalTransitionOutcome =
   | { kind: "invalid" }
@@ -65,7 +68,11 @@ export class PortalTransitionCoordinator {
       playerFoot: input.playerFoot,
     });
     if (!evaluation.ok) {
-      return { kind: "rejected", actionId: parsed.data.actionId, code: evaluation.code };
+      return {
+        kind: "rejected",
+        actionId: parsed.data.actionId,
+        code: evaluation.code,
+      };
     }
     // Checkpoint the safe, pre-transition location before anything is
     // consumed or removed, so a failure downstream still recovers here

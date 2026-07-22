@@ -239,9 +239,7 @@ describe("portal transitions between village and forest", () => {
       portalId: "portal_forest_gate",
     });
     await waitUntil(() => expect(messages).toHaveLength(1));
-    expect("ticket" in messages[0]! ? "approved" : "rejected").toBe(
-      "approved",
-    );
+    expect("ticket" in messages[0]! ? "approved" : "rejected").toBe("approved");
   });
 
   it("recovers to the village with a single presence after a rejected destination join (AC4, AC8)", async () => {

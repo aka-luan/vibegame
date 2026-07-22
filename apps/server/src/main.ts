@@ -23,9 +23,7 @@ const accountRepository = new GuestAccountRepository(database.db);
 const durableState = new DurableStateRepository(database.db);
 const accountService = new GuestAccountService(accountRepository);
 const playTickets = new DatabasePlayTickets(accountRepository);
-const transitionTickets = new PostgresTransitionTicketIssuer(
-  accountRepository,
-);
+const transitionTickets = new PostgresTransitionTicketIssuer(accountRepository);
 const questPersistence = new PostgresQuestPersistence(durableState);
 const rewardPersistence = new PostgresRewardPersistence(durableState);
 const equipmentPersistence = new PostgresEquipmentPersistence(durableState);

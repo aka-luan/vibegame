@@ -15,7 +15,12 @@ export const PORTAL_TRANSITION_COOLDOWN_MS = 2_000;
 export const PORTAL_PROXIMITY_RADIUS = 48;
 
 export type PortalTransitionEvaluation =
-  | { ok: true; destinationMapId: string; destinationEntranceId: string; destinationRoomName: string }
+  | {
+      ok: true;
+      destinationMapId: string;
+      destinationEntranceId: string;
+      destinationRoomName: string;
+    }
   | { ok: false; code: ErrorCode };
 
 /**

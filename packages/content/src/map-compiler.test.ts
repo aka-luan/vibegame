@@ -200,7 +200,12 @@ describe("Tiled map compiler", () => {
       },
     ]);
     expect(result.client.portalHints).toEqual([
-      { id: "portal_forest_gate", label: "Travel to the forest", x: 1476, y: 328 },
+      {
+        id: "portal_forest_gate",
+        label: "Travel to the forest",
+        x: 1476,
+        y: 328,
+      },
     ]);
   });
 

@@ -8,7 +8,10 @@ import { evaluatePortalTransition } from "./portal-transition.js";
 const villageGatePortal = villageMap.portals.find(
   (portal) => portal.id === "portal_forest_gate",
 )!;
-const villageGateFoot = { x: villageGatePortal.x + 1, y: villageGatePortal.y + 1 };
+const villageGateFoot = {
+  x: villageGatePortal.x + 1,
+  y: villageGatePortal.y + 1,
+};
 
 describe("evaluatePortalTransition", () => {
   it("accepts a valid transition within range, off cooldown, to a known destination", () => {

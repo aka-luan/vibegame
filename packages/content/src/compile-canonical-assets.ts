@@ -94,7 +94,10 @@ async function compileCanonicalAssets(): Promise<void> {
         .join("\n")}`,
     );
   }
-  const portalIssues = validatePortalDestinations([map.server, forestMap.server]);
+  const portalIssues = validatePortalDestinations([
+    map.server,
+    forestMap.server,
+  ]);
   if (portalIssues.length > 0) {
     throw new Error(
       `Portal destination validation failed:\n${portalIssues

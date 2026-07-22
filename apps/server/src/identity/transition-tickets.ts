@@ -98,8 +98,6 @@ export class DevelopmentTransitionTicketIssuer implements TransitionTicketIssuer
     destinationEntranceId: string;
     contentVersion: string;
   }): Promise<{ ticket: string; expiresAtMs: number } | undefined> {
-    return Promise.resolve(
-      this.#developmentPlayTickets.issueTransition(input),
-    );
+    return Promise.resolve(this.#developmentPlayTickets.issueTransition(input));
   }
 }
