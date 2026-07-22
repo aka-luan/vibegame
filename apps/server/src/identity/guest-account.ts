@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
+import { forestSlice } from "@gameish/content/slices/forest";
 import { villageSlice } from "@gameish/content/slices/village";
 import type {
   AccountCharacter,
@@ -82,6 +83,15 @@ export interface SessionContext {
 export interface AccountServiceOptions {
   now?: () => number;
   randomBytes?: (size: number) => Buffer;
+}
+
+const CONTENT_VERSION_BY_MAP_ID: Readonly<Record<string, string>> = {
+  [villageSlice.mapId]: villageSlice.contentVersion,
+  [forestSlice.mapId]: forestSlice.contentVersion,
+};
+
+function contentVersionForMap(mapId: string): string | undefined {
+  return CONTENT_VERSION_BY_MAP_ID[mapId];
 }
 
 function makeCookie(secret: string): string {
@@ -242,7 +252,7 @@ export class GuestAccountService {
   async issuePlayTicket(
     session: AccountSession,
     characterId: string | undefined,
-  ): Promise<{ ticket: string; expiresAt: number } | undefined> {
+  ): Promise<{ ticket: string; expiresAt: number; mapId: string } | undefined> {
     const selectedCharacterId =
       characterId ?? session.selectedCharacterId ?? undefined;
     if (!selectedCharacterId) return undefined;
@@ -251,6 +261,10 @@ export class GuestAccountService {
       (candidate) => candidate.id === selectedCharacterId,
     );
     if (!character) return undefined;
+    // The ticket is bound to the character's checkpointed logical map, so it
+    // must carry that map's own content version rather than the village's.
+    const contentVersion = contentVersionForMap(character.logicalMapId);
+    if (!contentVersion) return undefined;
     const ticket = this.#randomBytes(32).toString("base64url");
     const nowMs = this.#now();
     const expiresAt = nowMs + PLAY_TICKET_TTL_MS;
@@ -260,12 +274,17 @@ export class GuestAccountService {
       characterId: selectedCharacterId,
       logicalDestination: character.logicalMapId,
       entranceId: character.entranceId,
-      contentVersion: villageSlice.contentVersion,
+      contentVersion,
       nonce: randomUUID(),
       now: new Date(nowMs),
       expiresAt: new Date(expiresAt),
     });
-    return created ? { ticket, expiresAt } : undefined;
+    // The caller cannot know which room to join without this: the ticket is
+    // bound to wherever the character was last checkpointed, which after a
+    // completed transition is the forest, not the village.
+    return created
+      ? { ticket, expiresAt, mapId: character.logicalMapId }
+      : undefined;
   }
 
   async #createSession(nowMs: number): Promise<SessionContext> {

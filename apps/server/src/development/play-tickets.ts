@@ -1,7 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
+import { forestSlice } from "@gameish/content/slices/forest";
 import { villageSlice } from "@gameish/content/slices/village";
 import { ERROR_CODES, type ErrorCode } from "@gameish/protocol";
+
+import { LOGICAL_MAPS } from "../rooms/logical-maps.js";
 
 export interface DevelopmentAdmission {
   userId: string;
@@ -10,7 +13,7 @@ export interface DevelopmentAdmission {
   displayName: string;
   logicalDestination: string;
   entranceId: string;
-  contentVersion: typeof villageSlice.contentVersion;
+  contentVersion: string;
   nonce: string;
   appearance: {
     rigId: string;
@@ -64,8 +67,21 @@ export class DevelopmentPlayTickets {
       mapId?: string | undefined;
       entranceId?: string | undefined;
     } = {},
-  ): { ticket: string; expiresAt: number } {
+  ): { ticket: string; expiresAt: number; mapId: string } | undefined {
     this.#purgeExpired();
+    // Even on a development-only endpoint the override is untrusted input:
+    // it must name a real logical map and a real named entrance on it, or no
+    // ticket is issued at all.
+    const mapId = options.mapId ?? villageSlice.mapId;
+    const destinationMap = LOGICAL_MAPS[mapId];
+    if (!destinationMap) return undefined;
+    const entranceId =
+      options.entranceId ??
+      (mapId === villageSlice.mapId
+        ? villageSlice.entranceId
+        : forestSlice.entranceId);
+    if (!destinationMap.spawns.some((spawn) => spawn.entranceId === entranceId))
+      return undefined;
     const userId = `development:user:${randomUUID()}`;
     const characterId = `development:character:${randomUUID()}`;
     const appearance = {
@@ -82,16 +98,16 @@ export class DevelopmentPlayTickets {
         characterId,
         partyId: options.partyId,
         displayName,
-        logicalDestination: options.mapId ?? villageSlice.mapId,
-        entranceId: options.entranceId ?? villageSlice.entranceId,
-        contentVersion: villageSlice.contentVersion,
+        logicalDestination: mapId,
+        entranceId,
+        contentVersion: destinationMap.contentVersion,
         nonce: randomUUID(),
         appearance,
       },
       expiresAt,
       consumed: false,
     });
-    return { ticket, expiresAt };
+    return { ticket, expiresAt, mapId };
   }
 
   /**

@@ -90,12 +90,14 @@ export function createHttpApp(options: HttpAppOptions): FastifyInstance {
       if (!parsed.success) {
         return reply.status(400).send({ code: ERROR_CODES.invalidJoinOptions });
       }
-      return reply.status(201).send(
-        developmentPlayTickets.issue(parsed.data.displayName, {
-          mapId: parsed.data.mapId,
-          entranceId: parsed.data.entranceId,
-        }),
-      );
+      const issued = developmentPlayTickets.issue(parsed.data.displayName, {
+        mapId: parsed.data.mapId,
+        entranceId: parsed.data.entranceId,
+      });
+      if (!issued) {
+        return reply.status(400).send({ code: ERROR_CODES.invalidJoinOptions });
+      }
+      return reply.status(201).send(issued);
     });
   }
 

@@ -22,7 +22,10 @@ import { z } from "zod";
 import type { PlayTicketConsumer } from "../identity/play-tickets.js";
 import type { TransitionTicketIssuer } from "../identity/transition-tickets.js";
 import { applyFootMovementStep } from "./map-movement.js";
-import { PortalTransitionCoordinator } from "./portal-transition-handler.js";
+import {
+  PortalCooldownRegistry,
+  PortalTransitionCoordinator,
+} from "./portal-transition-handler.js";
 import { resolveSpawnPosition } from "./spawn-resolution.js";
 
 const joinOptionsSchema = z
@@ -121,12 +124,17 @@ export function createForestRoom(
       event: "disconnected" | "reconnected" | "removed",
     ) => void;
     transitionTickets?: TransitionTicketIssuer;
+    portalCooldowns?: PortalCooldownRegistry;
   } = {},
 ) {
   const transitionTickets: TransitionTicketIssuer =
     options.transitionTickets ?? {
       issue: () => Promise.resolve(undefined),
     };
+  // Shared across every logical-map room when the server wires it, so the
+  // cooldown survives the transition that removes the source session.
+  const portalCooldowns =
+    options.portalCooldowns ?? new PortalCooldownRegistry();
 
   return class ForestRoom extends Room<{ state: ForestState }> {
     override state = new ForestState();
@@ -149,6 +157,7 @@ export function createForestRoom(
     readonly #portalTransitions = new PortalTransitionCoordinator({
       sourceMap: forestMap,
       transitionTickets,
+      cooldowns: portalCooldowns,
       now: this.#now,
     });
 
@@ -206,7 +215,18 @@ export function createForestRoom(
         unsafeIntention,
         playerFoot: player ? { x: player.x, y: player.y } : undefined,
         identity,
-        checkpoint: () => this.#checkpoint(client.sessionId, "online"),
+        // A durable character's checkpoint is what AC4 recovery reads, so a
+        // configured checkpoint that fails must block the transition rather
+        // than strand the character at an unknown location. A development
+        // identity has no durable location row at all (same convention as
+        // `#questsForCharacter`), so there is nothing to lose and the
+        // transition proceeds.
+        checkpoint: () =>
+          this.#checkpointLocation &&
+          identity &&
+          !identity.characterId.startsWith("development:")
+            ? this.#checkpoint(client.sessionId, "online")
+            : Promise.resolve(true),
       });
       if (outcome.kind === "invalid") return;
       if (outcome.kind === "rejected") {

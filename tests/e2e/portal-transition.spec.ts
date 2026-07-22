@@ -39,6 +39,9 @@ test("travels through a real portal transition from the village to the forest an
     })
     .toBeLessThan(200);
 
+  // The portal cooldown is per character and outlives the room change, so
+  // the return trip has to wait it out the same way a player would.
+  await page.waitForTimeout(2_500);
   await travelToVillage.click();
 
   await expect(travelToForest).toBeVisible({ timeout: 10_000 });

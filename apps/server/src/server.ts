@@ -19,6 +19,7 @@ import {
 } from "./identity/play-tickets.js";
 import { PrivacySpikeRoom } from "./rooms/privacy-spike-room.js";
 import { createForestRoom } from "./rooms/forest-room.js";
+import { PortalCooldownRegistry } from "./rooms/portal-transition-handler.js";
 import { createVillageRoom } from "./rooms/village-room.js";
 import {
   DevelopmentTransitionTicketIssuer,
@@ -139,6 +140,9 @@ export async function startFoundationServer(
           options.transitionTickets,
         ])
       : (options.transitionTickets ?? developmentTransitionTickets);
+  // One registry shared by every logical-map room: the portal cooldown
+  // follows the character across the transition, not the source session.
+  const portalCooldowns = new PortalCooldownRegistry();
   if (playTickets) {
     gameServer.define(
       ROOM_NAMES.village,
@@ -178,6 +182,7 @@ export async function startFoundationServer(
           ? {}
           : { checkpointLocation: options.checkpointLocation }),
         ...(transitionTickets === undefined ? {} : { transitionTickets }),
+        portalCooldowns,
         recordLifecycle(event) {
           app.log.info({ event }, "Village connection lifecycle changed");
         },
@@ -194,6 +199,7 @@ export async function startFoundationServer(
           ? {}
           : { checkpointLocation: options.checkpointLocation }),
         ...(transitionTickets === undefined ? {} : { transitionTickets }),
+        portalCooldowns,
         recordLifecycle(event) {
           app.log.info({ event }, "Forest connection lifecycle changed");
         },

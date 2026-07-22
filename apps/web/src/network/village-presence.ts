@@ -358,26 +358,37 @@ export async function connectDevelopmentVillage(
       if (typeof recoveredBody.ticket !== "string") {
         throw new Error("Development recovery returned an invalid ticket");
       }
-      return { ticket: recoveredBody.ticket, roomName: ROOM_NAMES.village };
+      return {
+        ticket: recoveredBody.ticket,
+        roomName: ROOM_NAMES.village,
+        mapId: villageMap.id,
+      };
     },
   );
 }
 
 export async function connectVillageWithTicket(
   ticket: string,
+  /**
+   * The logical map the server bound this ticket to — the character's
+   * checkpointed map, not a client choice. Defaults to the village only for
+   * callers that predate multi-map admission.
+   */
+  admittedMapId: string = villageMap.id,
   options: { simulatedLatencyMs?: number } = {},
 ): Promise<VillagePresence> {
   return connectVillage(
     ticket,
     options,
-    ROOM_NAMES.village,
-    villageMap.id,
-    async (sourceRoomName) => {
+    roomNameForMapId(admittedMapId),
+    admittedMapId,
+    async () => {
       // A fresh play ticket resumes the signed-in character at its most
       // recent checkpoint (see `GuestAccountService#issuePlayTicket`), which
       // for a just-failed transition is the safe location the source room
-      // checkpointed before issuing the transition ticket (AC4) — so the
-      // room to rejoin is the same one the client was just leaving.
+      // checkpointed before issuing the transition ticket (AC4). The server
+      // names the map that ticket is bound to; the client follows it rather
+      // than assuming the room it was leaving.
       const response = await fetch("/api/play-ticket", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -386,11 +397,20 @@ export async function connectVillageWithTicket(
       if (!response.ok) {
         throw new Error("Play ticket recovery is unavailable");
       }
-      const body = (await response.json()) as { ticket?: unknown };
+      const body = (await response.json()) as {
+        ticket?: unknown;
+        mapId?: unknown;
+      };
       if (typeof body.ticket !== "string") {
         throw new Error("Play ticket recovery returned an invalid ticket");
       }
-      return { ticket: body.ticket, roomName: sourceRoomName };
+      return {
+        ticket: body.ticket,
+        roomName: roomNameForMapId(
+          typeof body.mapId === "string" ? body.mapId : undefined,
+        ),
+        mapId: typeof body.mapId === "string" ? body.mapId : villageMap.id,
+      };
     },
   );
 }
@@ -402,7 +422,7 @@ async function connectVillage(
   initialMapId: string,
   requestRecoveryTicket: (
     sourceRoomName: string,
-  ) => Promise<{ ticket: string; roomName: string }>,
+  ) => Promise<{ ticket: string; roomName: string; mapId: string }>,
 ): Promise<VillagePresence> {
   const client = new Client(window.location.origin);
   let room: Room<unknown, AnyPublicRoomState> = await client.joinOrCreate(
@@ -773,8 +793,7 @@ async function connectVillage(
   ): Promise<void> {
     try {
       const recovery = await requestRecoveryTicket(sourceRoomName);
-      const recoveredMapId =
-        recovery.roomName === ROOM_NAMES.forest ? forestMap.id : villageMap.id;
+      const recoveredMapId = recovery.mapId;
       const recoveredRoom: Room<unknown, AnyPublicRoomState> =
         await client.joinOrCreate(recovery.roomName, {
           ticket: recovery.ticket,

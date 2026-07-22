@@ -7,6 +7,8 @@ import type {
   GuestSessionRecord,
 } from "@gameish/database";
 
+import { forestSlice } from "@gameish/content/slices/forest";
+
 import { createHttpApp } from "../http/app.js";
 import {
   GUEST_SESSION_ROTATION_MS,
@@ -286,5 +288,25 @@ describe("guest account lifecycle", () => {
       .parse(JSON.parse(ticket.body) as unknown);
     expect(ticketBody.ticket).toEqual(expect.any(String));
     expect(ticketBody.expiresAt).toEqual(expect.any(Number));
+  });
+
+  it("binds a play ticket to the character's checkpointed logical map", async () => {
+    const repository = new MemoryAccountRepository();
+    const service = new GuestAccountService(repository);
+    const context = await service.ensureSession(undefined);
+    const character = await service.createCharacter(context.session.userId, {
+      name: "Aster",
+      requestId: "create-forest",
+    });
+    // A character who left from the forest must be readmitted to the
+    // forest: the ticket carries that map and its own content version, and
+    // the caller is told which map it was bound to so it can join the right
+    // room instead of guessing the village (AC4).
+    const stored = repository.characters.get(character.id)!;
+    stored.logicalMapId = forestSlice.mapId;
+    stored.entranceId = forestSlice.entranceId;
+
+    const issued = await service.issuePlayTicket(context.session, character.id);
+    expect(issued?.mapId).toBe(forestSlice.mapId);
   });
 });

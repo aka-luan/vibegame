@@ -264,10 +264,21 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
         body: JSON.stringify({ characterId }),
       });
       if (!ticketResponse.ok) throw new Error("Play ticket unavailable");
-      const body = (await ticketResponse.json()) as { ticket?: unknown };
+      const body = (await ticketResponse.json()) as {
+        ticket?: unknown;
+        mapId?: unknown;
+      };
       if (typeof body.ticket !== "string")
         throw new Error("Invalid play ticket");
-      const connectedPresence = await connectVillageWithTicket(body.ticket);
+      // The ticket is bound to the character's checkpointed logical map, so
+      // the room to join follows the server's answer, never a client guess:
+      // a character who logged out in the forest resumes in the forest.
+      const admittedMapId =
+        typeof body.mapId === "string" ? body.mapId : villageMap.id;
+      const connectedPresence = await connectVillageWithTicket(
+        body.ticket,
+        admittedMapId,
+      );
       presence.current = connectedPresence;
       setJoined(true);
       unsubscribeCombat.current = connectedPresence.subscribe(
@@ -275,11 +286,11 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
           setCombatSnapshot(pickCombatSnapshot(presenceSnapshot));
         },
       );
-      renderedMapId.current = villageMap.id;
+      renderedMapId.current = admittedMapId;
       renderer.current = createWorldRenderer(
         worldRoot,
         connectedPresence,
-        villageMap,
+        mapArtifactFor(admittedMapId),
         setSnapshot,
       );
     } catch {

@@ -13,6 +13,7 @@ import {
   type TransitionRejectedMessage,
   type TransitionTicketMessage,
 } from "../packages/protocol/src/index.js";
+import { PORTAL_TRANSITION_COOLDOWN_MS } from "../apps/server/src/rooms/portal-transition.js";
 
 let runningServer: RunningFoundationServer | undefined;
 const joinedRooms: Room[] = [];
@@ -87,6 +88,15 @@ function playerCount(room: Room): number {
   return Object.keys(state.players).length;
 }
 
+function displayNames(room: Room): string[] {
+  const state = JSON.parse(JSON.stringify(room.state)) as {
+    players: Record<string, { displayName: string }>;
+  };
+  return Object.values(state.players).map((player) => player.displayName);
+}
+
+const TRAVELER = "Recovering Ranger";
+
 describe("portal transitions between village and forest", () => {
   it("moves a single presence from the village to the forest and back (AC3, AC7)", async () => {
     const endpoint = await startDevelopmentServer();
@@ -143,7 +153,13 @@ describe("portal transitions between village and forest", () => {
       expect(playerCount(forestWitness)).toBe(2);
     });
 
-    // Return trip: forest_edge is already next to the village portal.
+    // Return trip: forest_edge is already next to the village portal. The
+    // cooldown is per character and shared across rooms, so it survives the
+    // transition that removed the source session — the return trip has to
+    // wait it out.
+    await new Promise((resolve) =>
+      setTimeout(resolve, PORTAL_TRANSITION_COOLDOWN_MS + 100),
+    );
     const returnTicketPromise = new Promise<TransitionTicketMessage>(
       (resolve) => {
         forest.onMessage<TransitionTicketMessage>(
@@ -234,22 +250,66 @@ describe("portal transitions between village and forest", () => {
       SERVER_MESSAGES.transitionRejected,
       (message) => messages.push(message),
     );
+    // Both requests leave the client before the server can finish the first
+    // one, which is exactly the race that could hand out two valid
+    // destination tickets for one character.
     player.send(CLIENT_MESSAGES.portalTransition, {
       actionId: "first",
       portalId: "portal_forest_gate",
     });
-    await waitUntil(() => expect(messages).toHaveLength(1));
-    expect("ticket" in messages[0]! ? "approved" : "rejected").toBe("approved");
+    player.send(CLIENT_MESSAGES.portalTransition, {
+      actionId: "second",
+      portalId: "portal_forest_gate",
+    });
+    await waitUntil(() => expect(messages).toHaveLength(2));
+    const approvals = messages.filter((message) => "ticket" in message);
+    const rejections = messages.filter(
+      (message) => !("ticket" in message),
+    ) as TransitionRejectedMessage[];
+    expect(approvals).toHaveLength(1);
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]!.code).toBe(ERROR_CODES.portalOnCooldown);
+  });
+
+  it("rejects a replayed transition ticket at the destination (AC6, replay)", async () => {
+    const endpoint = await startDevelopmentServer();
+    const player = await joinRoom(endpoint, ROOM_NAMES.village, "Ranger", {
+      mapId: "map:village",
+      entranceId: "village_gate",
+    });
+    const ticketPromise = new Promise<TransitionTicketMessage>((resolve) => {
+      player.onMessage<TransitionTicketMessage>(
+        SERVER_MESSAGES.transitionTicket,
+        resolve,
+      );
+    });
+    player.send(CLIENT_MESSAGES.portalTransition, {
+      actionId: "replay",
+      portalId: "portal_forest_gate",
+    });
+    const { ticket } = await ticketPromise;
+
+    const destination = await new Client(endpoint).joinOrCreate(
+      ROOM_NAMES.forest,
+      { ticket },
+    );
+    joinedRooms.push(destination);
+
+    // The same ticket a second time must fail closed: a transition ticket is
+    // consumed exactly once (ADR-0007), so a replay cannot produce a second
+    // destination presence for the same character.
+    await expect(
+      new Client(endpoint).joinOrCreate(ROOM_NAMES.forest, { ticket }),
+    ).rejects.toThrow();
+    await waitUntil(() => expect(playerCount(destination)).toBe(1));
   });
 
   it("recovers to the village with a single presence after a rejected destination join (AC4, AC8)", async () => {
     const endpoint = await startDevelopmentServer();
-    const traveler = await joinRoom(
-      endpoint,
-      ROOM_NAMES.village,
-      "Recovering Ranger",
-      { mapId: "map:village", entranceId: "village_gate" },
-    );
+    const traveler = await joinRoom(endpoint, ROOM_NAMES.village, TRAVELER, {
+      mapId: "map:village",
+      entranceId: "village_gate",
+    });
     const witness = await joinRoom(
       endpoint,
       ROOM_NAMES.village,
@@ -282,20 +342,37 @@ describe("portal transitions between village and forest", () => {
       }),
     ).rejects.toThrow();
 
+    // The failed destination join must leave no presence behind in the
+    // forest either: a witness joining the destination sees only itself.
+    const forestWitness = await joinRoom(
+      endpoint,
+      ROOM_NAMES.forest,
+      "Forest Witness",
+      { mapId: "map:forest", entranceId: "forest_edge" },
+    );
+    await waitUntil(() => expect(playerCount(forestWitness)).toBe(1));
+
     // Recovery: the client falls back to requesting a fresh play ticket
     // and rejoining. (A real account's fresh ticket resolves to the
     // character's last checkpointed safe location via
     // GuestAccountService.issuePlayTicket; the in-memory development path
-    // used here always restarts at the village entrance, which is
-    // equivalent for this test's purpose — proving recovery never
-    // duplicates a presence anywhere.)
-    const recovered = await joinRoom(
-      endpoint,
-      ROOM_NAMES.village,
-      "Recovering Ranger",
-      { mapId: "map:village", entranceId: "village_gate" },
-    );
+    // used here restarts a fresh development identity at the village
+    // entrance, so the assertion below is on the display name rather than
+    // on a raw count.)
+    const recovered = await joinRoom(endpoint, ROOM_NAMES.village, TRAVELER, {
+      mapId: "map:village",
+      entranceId: "village_gate",
+    });
     await waitUntil(() => expect(playerCount(witness)).toBe(2));
+    // Exactly one "Recovering Ranger" exists across both rooms — the
+    // traveler was removed from the source, never landed in the
+    // destination, and came back exactly once (AC4, AC8).
+    await waitUntil(() => {
+      expect(displayNames(witness).filter((name) => name === TRAVELER)).toEqual(
+        [TRAVELER],
+      );
+      expect(displayNames(forestWitness)).toEqual(["Forest Witness"]);
+    });
     expect(playerCount(recovered)).toBe(2);
   });
 });
