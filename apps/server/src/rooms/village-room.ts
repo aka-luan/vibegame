@@ -38,6 +38,10 @@ import {
   PortalCooldownRegistry,
   PortalTransitionCoordinator,
 } from "./portal-transition-handler.js";
+import {
+  DEFAULT_MAP_INSTANCE_HARD_CAPACITY,
+  type MapRoomMetadata,
+} from "./placement.js";
 import { resolveSpawnPosition } from "./spawn-resolution.js";
 import {
   InMemoryEquipmentPersistence,
@@ -260,12 +264,14 @@ export type {
 };
 
 const MAX_PLAYER_HEALTH = 100;
+const DEFAULT_CHECKPOINT_TIMEOUT_MS = 1_000;
 
 export function createVillageRoom(
   playTickets: PlayTicketConsumer,
   options: {
     now?: () => number;
     reconnectGraceSeconds?: number;
+    hardCapacity?: number;
     combatCatalog?: CombatCatalog;
     rng?: () => number;
     rewardRng?: () => number;
@@ -289,6 +295,13 @@ export function createVillageRoom(
     }) => void;
     checkpointLocation?:
       ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
+    checkpointTimeoutMs?: number;
+    recordCheckpointTimeout?: (details: {
+      logicalMapId: string;
+      sessionId: string;
+      connectionState: LocationCheckpointInput["connectionState"];
+      timeoutMs: number;
+    }) => void;
     recordLifecycle?: (
       event: "disconnected" | "reconnected" | "removed",
     ) => void;
@@ -304,7 +317,10 @@ export function createVillageRoom(
   // cooldown survives the transition that removes the source session.
   const portalCooldowns =
     options.portalCooldowns ?? new PortalCooldownRegistry();
-  return class VillageRoom extends Room<{ state: VillageState }> {
+  return class VillageRoom extends Room<{
+    state: VillageState;
+    metadata: MapRoomMetadata;
+  }> {
     override state = new VillageState();
     readonly #pendingIntentions = new Map<
       string,
@@ -314,6 +330,10 @@ export function createVillageRoom(
     readonly #lastProcessedSequences = new Map<string, number>();
     readonly #now = options.now ?? Date.now;
     readonly #reconnectGraceSeconds = options.reconnectGraceSeconds ?? 5;
+    readonly #checkpointTimeoutMs = Math.min(
+      options.checkpointTimeoutMs ?? DEFAULT_CHECKPOINT_TIMEOUT_MS,
+      Math.max(1, this.#reconnectGraceSeconds * 1_000),
+    );
     readonly #combatCatalog = options.combatCatalog ?? villageCombat;
     readonly #rng = options.rng ?? Math.random;
     readonly #rewardRng = options.rewardRng ?? options.rng ?? Math.random;
@@ -366,6 +386,12 @@ export function createVillageRoom(
     #monsterLifecycle!: MonsterLifecycle;
 
     override onCreate() {
+      this.maxClients =
+        options.hardCapacity ?? DEFAULT_MAP_INSTANCE_HARD_CAPACITY;
+      this.metadata = {
+        logicalMapId: villageSlice.mapId,
+        instanceRole: "public",
+      };
       if (!this.#questDefinition) {
         throw new Error("Village quest definition is unavailable");
       }
@@ -1118,8 +1144,12 @@ export function createVillageRoom(
       });
     }
 
-    override onLeave(client: Client) {
-      void this.#checkpoint(client.sessionId, "offline");
+    override async onLeave(client: Client) {
+      // Colyseus waits for this lifecycle hook before disposing an empty
+      // room. Keep the final checkpoint inside that grace boundary so the
+      // placement driver cannot observe a freed seat before durable recovery
+      // state has been attempted.
+      await this.#checkpoint(client.sessionId, "offline");
       this.#removeSession(client.sessionId);
       options.recordLifecycle?.("removed");
     }
@@ -1304,7 +1334,8 @@ export function createVillageRoom(
       if (!player || !identity || !spawn) return false;
       this.#lastCheckpointAtMs.set(sessionId, this.state.serverTimeMs);
       try {
-        return await this.#checkpointLocation({
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const checkpoint = this.#checkpointLocation({
           characterId: identity.characterId,
           logicalMapId: villageSlice.mapId,
           entranceId,
@@ -1313,6 +1344,22 @@ export function createVillageRoom(
           connectionState,
           now: new Date(this.state.serverTimeMs),
         });
+        const bounded = new Promise<boolean>((resolve) => {
+          timeout = setTimeout(() => {
+            options.recordCheckpointTimeout?.({
+              logicalMapId: villageSlice.mapId,
+              sessionId,
+              connectionState,
+              timeoutMs: this.#checkpointTimeoutMs,
+            });
+            resolve(false);
+          }, this.#checkpointTimeoutMs);
+        });
+        try {
+          return await Promise.race([checkpoint, bounded]);
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout);
+        }
       } catch {
         return false;
       }

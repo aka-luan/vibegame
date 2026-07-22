@@ -31,6 +31,10 @@ import {
   PortalCooldownRegistry,
   PortalTransitionCoordinator,
 } from "./portal-transition-handler.js";
+import {
+  DEFAULT_MAP_INSTANCE_HARD_CAPACITY,
+  type MapRoomMetadata,
+} from "./placement.js";
 import { resolveSpawnPosition } from "./spawn-resolution.js";
 
 const joinOptionsSchema = z
@@ -110,6 +114,8 @@ export type ForestStateConformance = AssertConforms<
 
 export type { AssertConforms, PublicAppearance, PublicPlayer, ForestState };
 
+const DEFAULT_CHECKPOINT_TIMEOUT_MS = 1_000;
+
 /**
  * The forest room: traversable-only for this issue (no combat, no
  * dialogue, no quests, no monsters — see issue #13 non-goals). Movement,
@@ -123,8 +129,16 @@ export function createForestRoom(
   options: {
     now?: () => number;
     reconnectGraceSeconds?: number;
+    hardCapacity?: number;
     checkpointLocation?:
       ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
+    checkpointTimeoutMs?: number;
+    recordCheckpointTimeout?: (details: {
+      logicalMapId: string;
+      sessionId: string;
+      connectionState: LocationCheckpointInput["connectionState"];
+      timeoutMs: number;
+    }) => void;
     recordLifecycle?: (
       event: "disconnected" | "reconnected" | "removed",
     ) => void;
@@ -149,7 +163,10 @@ export function createForestRoom(
   const portalCooldowns =
     options.portalCooldowns ?? new PortalCooldownRegistry();
 
-  return class ForestRoom extends Room<{ state: ForestState }> {
+  return class ForestRoom extends Room<{
+    state: ForestState;
+    metadata: MapRoomMetadata;
+  }> {
     override state = new ForestState();
     readonly #pendingIntentions = new Map<
       string,
@@ -159,6 +176,10 @@ export function createForestRoom(
     readonly #lastProcessedSequences = new Map<string, number>();
     readonly #now = options.now ?? Date.now;
     readonly #reconnectGraceSeconds = options.reconnectGraceSeconds ?? 5;
+    readonly #checkpointTimeoutMs = Math.min(
+      options.checkpointTimeoutMs ?? DEFAULT_CHECKPOINT_TIMEOUT_MS,
+      Math.max(1, this.#reconnectGraceSeconds * 1_000),
+    );
     readonly #checkpointLocation = options.checkpointLocation;
     readonly #mapChatEnabled = options.mapChatEnabled ?? false;
     readonly #mapChatRateLimiter =
@@ -178,6 +199,12 @@ export function createForestRoom(
     });
 
     override onCreate() {
+      this.maxClients =
+        options.hardCapacity ?? DEFAULT_MAP_INSTANCE_HARD_CAPACITY;
+      this.metadata = {
+        logicalMapId: forestSlice.mapId,
+        instanceRole: "public",
+      };
       this.maxMessagesPerSecond = 60;
       this.state.serverTimeMs = this.#now();
       this.onMessage(
@@ -396,8 +423,10 @@ export function createForestRoom(
       });
     }
 
-    override onLeave(client: Client) {
-      void this.#checkpoint(client.sessionId, "offline");
+    override async onLeave(client: Client) {
+      // Keep the final checkpoint within Colyseus' disposal lifecycle. The
+      // seat is not considered free until this hook has completed.
+      await this.#checkpoint(client.sessionId, "offline");
       this.#removeSession(client.sessionId);
       options.recordLifecycle?.("removed");
     }
@@ -474,7 +503,8 @@ export function createForestRoom(
       if (!player || !identity || !spawn) return false;
       this.#lastCheckpointAtMs.set(sessionId, this.state.serverTimeMs);
       try {
-        return await this.#checkpointLocation({
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const checkpoint = this.#checkpointLocation({
           characterId: identity.characterId,
           logicalMapId: forestSlice.mapId,
           entranceId,
@@ -483,6 +513,22 @@ export function createForestRoom(
           connectionState,
           now: new Date(this.state.serverTimeMs),
         });
+        const bounded = new Promise<boolean>((resolve) => {
+          timeout = setTimeout(() => {
+            options.recordCheckpointTimeout?.({
+              logicalMapId: forestSlice.mapId,
+              sessionId,
+              connectionState,
+              timeoutMs: this.#checkpointTimeoutMs,
+            });
+            resolve(false);
+          }, this.#checkpointTimeoutMs);
+        });
+        try {
+          return await Promise.race([checkpoint, bounded]);
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout);
+        }
       } catch {
         return false;
       }

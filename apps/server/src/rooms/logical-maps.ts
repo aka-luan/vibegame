@@ -4,10 +4,10 @@ import type { ServerMapArtifact } from "@gameish/content";
 import { ROOM_NAMES } from "@gameish/protocol";
 
 /**
- * The registry of every logical map's server artifact and the room name a
- * player joins to reach it. One instance per logical map is in scope (no
- * overflow, no multiple regions) — this is a flat lookup, not a matchmaking
- * service.
+ * The registry of every logical map's server artifact and the logical room
+ * name a player joins to reach it. Placement may create multiple ephemeral
+ * map instances behind each room name; this registry intentionally exposes
+ * only logical-map vocabulary to the rest of the application.
  */
 export const LOGICAL_MAPS: Readonly<Record<string, ServerMapArtifact>> = {
   [villageMap.id]: villageMap,

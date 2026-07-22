@@ -46,6 +46,10 @@ const server = await startFoundationServer({
   equipmentPersistence,
   checkpointLocation: (input) => durableState.checkpointLocation(input),
   developmentLoginEnabled: config.DEVELOPMENT_LOGIN_ENABLED,
+  developmentInstanceInspectionEnabled:
+    config.DEVELOPMENT_INSTANCE_INSPECTION_ENABLED,
+  softPopulationTarget: config.MAP_INSTANCE_SOFT_POPULATION_TARGET,
+  hardCapacity: config.MAP_INSTANCE_HARD_CAPACITY,
   mapChatEnabled: config.CONTROLLED_MAP_CHAT_ENABLED,
   runtimeEnvironment: config.NODE_ENV,
 });

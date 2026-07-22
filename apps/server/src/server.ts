@@ -4,7 +4,7 @@ import type {
   ServerResponse,
 } from "node:http";
 
-import { Server } from "@colyseus/core";
+import { Server, type RegisteredHandler } from "@colyseus/core";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { ROOM_NAMES } from "@gameish/protocol";
 import type { LocationCheckpointInput } from "@gameish/database";
@@ -30,6 +30,11 @@ import type { QuestPersistence } from "./quests/persistence.js";
 import type { RewardPersistence } from "./rewards/persistence.js";
 import type { EquipmentPersistence } from "./equipment/persistence.js";
 import { MapChatRateLimiter } from "./chat/map-chat.js";
+import {
+  DEFAULT_MAP_INSTANCE_HARD_CAPACITY,
+  DEFAULT_MAP_INSTANCE_SOFT_POPULATION_TARGET,
+  MapPlacementDriver,
+} from "./rooms/placement.js";
 
 export interface StartFoundationServerOptions {
   host: string;
@@ -39,11 +44,15 @@ export interface StartFoundationServerOptions {
   readinessProbe: ReadinessProbe;
   developmentLoginEnabled?: boolean | undefined;
   mapChatEnabled?: boolean | undefined;
+  developmentInstanceInspectionEnabled?: boolean | undefined;
   accountService?: GuestAccountService | undefined;
   playTickets?: PlayTicketConsumer | undefined;
   runtimeEnvironment?: "development" | "test" | "production" | undefined;
   now?: (() => number) | undefined;
   reconnectGraceSeconds?: number | undefined;
+  checkpointTimeoutMs?: number | undefined;
+  softPopulationTarget?: number | undefined;
+  hardCapacity?: number | undefined;
   rewardPersistence?: RewardPersistence | undefined;
   questPersistence?: QuestPersistence | undefined;
   equipmentPersistence?: EquipmentPersistence | undefined;
@@ -64,6 +73,14 @@ export interface StartFoundationServerOptions {
     | undefined;
   checkpointLocation?:
     ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
+  recordCheckpointTimeout?:
+    | ((details: {
+        logicalMapId: string;
+        sessionId: string;
+        connectionState: LocationCheckpointInput["connectionState"];
+        timeoutMs: number;
+      }) => void)
+    | undefined;
   transitionTickets?: TransitionTicketIssuer | undefined;
   logger?: boolean | undefined;
 }
@@ -83,17 +100,83 @@ function installRequestDispatcher(
   app: FastifyInstance,
   fastifyListener: RequestListener,
   colyseusListener: RequestListener,
+  isMapInstance: (roomId: string) => boolean,
 ) {
   app.server.removeAllListeners("request");
   app.server.on(
     "request",
     (request: IncomingMessage, response: ServerResponse) => {
+      const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+      const joinByIdMatch =
+        request.method === "POST"
+          ? /^\/matchmake\/joinById\/([^/]+)$/.exec(pathname)
+          : undefined;
+      if (joinByIdMatch) {
+        let roomId: string | undefined;
+        try {
+          roomId = decodeURIComponent(joinByIdMatch[1] ?? "");
+        } catch {
+          roomId = undefined;
+        }
+        if (roomId && isMapInstance(roomId)) {
+          const body = JSON.stringify({
+            error: "Map instance selection is not client-controlled",
+          });
+          response.writeHead(400, {
+            "content-type": "application/json",
+            "content-length": String(Buffer.byteLength(body)),
+          });
+          response.end(body);
+          return;
+        }
+      }
       const listener = isColyseusRequest(request)
         ? colyseusListener
         : fastifyListener;
       listener(request, response);
     },
   );
+}
+
+function registerPlacementLifecycle(
+  handler: RegisteredHandler,
+  logicalMapId: string,
+  app: FastifyInstance,
+): void {
+  handler.on("create", (room: { roomId: string }) => {
+    app.log.info(
+      {
+        event: "map_instance_created",
+        logicalMapId,
+        roomId: room.roomId,
+      },
+      "Map instance created",
+    );
+  });
+  handler.on(
+    "join",
+    (room: { roomId: string; clients: { length: number } }) => {
+      app.log.info(
+        {
+          event: "map_instance_placement",
+          logicalMapId,
+          roomId: room.roomId,
+          clients: room.clients.length,
+        },
+        "Player placed in map instance",
+      );
+    },
+  );
+  handler.on("dispose", (room: { roomId: string }) => {
+    app.log.info(
+      {
+        event: "map_instance_disposed",
+        logicalMapId,
+        roomId: room.roomId,
+      },
+      "Map instance disposed after its lifecycle work",
+    );
+  });
 }
 
 export async function startFoundationServer(
@@ -113,6 +196,21 @@ export async function startFoundationServer(
   ) {
     throw new Error("Controlled map chat cannot be enabled in production");
   }
+  if (
+    options.developmentInstanceInspectionEnabled &&
+    options.runtimeEnvironment !== "development" &&
+    options.runtimeEnvironment !== "test"
+  ) {
+    throw new Error(
+      "Development instance inspection cannot be enabled in production",
+    );
+  }
+  const placementDriver = new MapPlacementDriver({
+    softPopulationTarget:
+      options.softPopulationTarget ??
+      DEFAULT_MAP_INSTANCE_SOFT_POPULATION_TARGET,
+    hardCapacity: options.hardCapacity ?? DEFAULT_MAP_INSTANCE_HARD_CAPACITY,
+  });
   const developmentPlayTickets = options.developmentLoginEnabled
     ? new DevelopmentPlayTickets(
         options.now === undefined ? undefined : { now: options.now },
@@ -125,6 +223,9 @@ export async function startFoundationServer(
   const app = createHttpApp({
     readinessProbe: options.readinessProbe,
     developmentPlayTickets,
+    developmentInstanceInspectionEnabled:
+      options.developmentInstanceInspectionEnabled,
+    inspectInstances: () => placementDriver.inspectInstances(),
     accountService: options.accountService,
     allowedOrigin: options.allowedOrigin,
     logger: options.logger,
@@ -150,6 +251,7 @@ export async function startFoundationServer(
   const transport = new WebSocketTransport({ server: app.server });
   const gameServer = new Server({
     transport,
+    driver: placementDriver,
     ...(options.publicAddress === undefined
       ? {}
       : { publicAddress: options.publicAddress }),
@@ -172,9 +274,10 @@ export async function startFoundationServer(
   // follows the character across the transition, not the source session.
   const portalCooldowns = new PortalCooldownRegistry();
   if (playTickets) {
-    gameServer.define(
+    const villageHandler = gameServer.define(
       ROOM_NAMES.village,
       createVillageRoom(playTickets, {
+        hardCapacity: placementDriver.hardCapacity,
         ...(options.now === undefined ? {} : { now: options.now }),
         ...(options.reconnectGraceSeconds === undefined
           ? {}
@@ -212,6 +315,19 @@ export async function startFoundationServer(
         ...(options.checkpointLocation === undefined
           ? {}
           : { checkpointLocation: options.checkpointLocation }),
+        ...(options.checkpointTimeoutMs === undefined
+          ? {}
+          : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
+        recordCheckpointTimeout(details) {
+          if (options.recordCheckpointTimeout) {
+            options.recordCheckpointTimeout(details);
+            return;
+          }
+          app.log.warn(
+            { event: "map_checkpoint_timeout", ...details },
+            "Map checkpoint exceeded its lifecycle timeout",
+          );
+        },
         ...(transitionTickets === undefined ? {} : { transitionTickets }),
         portalCooldowns,
         recordLifecycle(event) {
@@ -219,9 +335,11 @@ export async function startFoundationServer(
         },
       }),
     );
-    gameServer.define(
+    registerPlacementLifecycle(villageHandler, "map:village", app);
+    const forestHandler = gameServer.define(
       ROOM_NAMES.forest,
       createForestRoom(playTickets, {
+        hardCapacity: placementDriver.hardCapacity,
         ...(options.now === undefined ? {} : { now: options.now }),
         ...(options.reconnectGraceSeconds === undefined
           ? {}
@@ -229,6 +347,19 @@ export async function startFoundationServer(
         ...(options.checkpointLocation === undefined
           ? {}
           : { checkpointLocation: options.checkpointLocation }),
+        ...(options.checkpointTimeoutMs === undefined
+          ? {}
+          : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
+        recordCheckpointTimeout(details) {
+          if (options.recordCheckpointTimeout) {
+            options.recordCheckpointTimeout(details);
+            return;
+          }
+          app.log.warn(
+            { event: "map_checkpoint_timeout", ...details },
+            "Map checkpoint exceeded its lifecycle timeout",
+          );
+        },
         ...(transitionTickets === undefined ? {} : { transitionTickets }),
         portalCooldowns,
         mapChatEnabled: options.mapChatEnabled === true,
@@ -239,6 +370,7 @@ export async function startFoundationServer(
         },
       }),
     );
+    registerPlacementLifecycle(forestHandler, "map:forest", app);
   }
   await gameServer.listen(options.port, options.host);
 
@@ -251,7 +383,9 @@ export async function startFoundationServer(
     await app.close();
     throw new Error("Colyseus request listener is unavailable");
   }
-  installRequestDispatcher(app, fastifyListener, colyseusListener);
+  installRequestDispatcher(app, fastifyListener, colyseusListener, (roomId) =>
+    placementDriver.isMapInstance(roomId),
+  );
 
   const address = app.server.address();
   if (!address || typeof address === "string") {
