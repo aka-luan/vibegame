@@ -46,12 +46,19 @@ export const ERROR_CODES = {
   invalidPlayTicket: "INVALID_PLAY_TICKET",
   playTicketExpired: "PLAY_TICKET_EXPIRED",
   playTicketReplayed: "PLAY_TICKET_REPLAYED",
+  portalNotFound: "PORTAL_NOT_FOUND",
+  portalOutOfRange: "PORTAL_OUT_OF_RANGE",
+  portalOnCooldown: "PORTAL_ON_COOLDOWN",
+  mapLocked: "MAP_LOCKED",
+  entranceNotFound: "ENTRANCE_NOT_FOUND",
+  transitionUnavailable: "TRANSITION_UNAVAILABLE",
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
 
 export const ROOM_NAMES = {
   village: "village",
+  forest: "forest",
 } as const;
 
 export const CLIENT_MESSAGES = {
@@ -66,6 +73,7 @@ export const CLIENT_MESSAGES = {
   equipmentEquip: "equipment_equip",
   equipmentUnequip: "equipment_unequip",
   equipmentStateRequest: "equipment_state_request",
+  portalTransition: "portal_transition",
 } as const;
 
 export const SERVER_MESSAGES = {
@@ -87,6 +95,8 @@ export const SERVER_MESSAGES = {
   questRejected: "quest_rejected",
   equipmentState: "equipment_state",
   equipmentResult: "equipment_result",
+  transitionTicket: "transition_ticket",
+  transitionRejected: "transition_rejected",
 } as const;
 
 export interface MovementIntention {
@@ -325,4 +335,22 @@ export interface QuestRewardMessage {
   quantity: number;
   experience: number;
   currency: number;
+}
+
+export interface PortalTransitionIntention {
+  actionId: string;
+  portalId: string;
+}
+
+export interface TransitionTicketMessage {
+  actionId: string;
+  ticket: string;
+  destinationRoomName: string;
+  destinationMapId: string;
+  expiresAtMs: number;
+}
+
+export interface TransitionRejectedMessage {
+  actionId: string;
+  code: ErrorCode;
 }
