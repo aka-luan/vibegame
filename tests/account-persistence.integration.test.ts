@@ -89,6 +89,7 @@ describe("durable guest account state", () => {
         userId: integrationUserId,
         characterId: first.id,
         logicalDestination: "map:village",
+        entranceId: "village_square",
         contentVersion: "content:village_m1_v1",
         nonce: `integration:ticket-nonce:${integrationUserId}`,
         now,

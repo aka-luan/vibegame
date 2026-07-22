@@ -200,6 +200,7 @@ export const playTickets = pgTable(
       .notNull()
       .references(() => characters.id, { onDelete: "cascade" }),
     logicalDestination: text("logical_destination").notNull(),
+    entranceId: text("entrance_id").notNull(),
     contentVersion: text("content_version").notNull(),
     nonce: text("nonce").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),

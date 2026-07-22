@@ -8,7 +8,6 @@ import villageDialogue from "@gameish/content/village-dialogue-server";
 import villageQuests from "@gameish/content/village-quests-server";
 import { villageSlice } from "@gameish/content/slices/village";
 import type {
-  DurableCharacterState,
   DurableEquipmentSnapshot,
   LocationCheckpointInput,
 } from "@gameish/database";
@@ -29,11 +28,19 @@ import {
   type PublicVillageState,
   type QuestRewardMessage,
   type QuestStateMessage,
+  type TransitionRejectedMessage,
+  type TransitionTicketMessage,
 } from "@gameish/protocol";
 import { moveCharacterFoot, PLAYER_MOVEMENT } from "@gameish/world";
 import { z } from "zod";
 
 import type { PlayTicketConsumer } from "../identity/play-tickets.js";
+import type { TransitionTicketIssuer } from "../identity/transition-tickets.js";
+import {
+  PortalCooldownRegistry,
+  PortalTransitionCoordinator,
+} from "./portal-transition-handler.js";
+import { resolveSpawnPosition } from "./spawn-resolution.js";
 import {
   InMemoryEquipmentPersistence,
   UnavailableEquipmentPersistence,
@@ -277,8 +284,18 @@ export function createVillageRoom(
     recordLifecycle?: (
       event: "disconnected" | "reconnected" | "removed",
     ) => void;
+    transitionTickets?: TransitionTicketIssuer;
+    portalCooldowns?: PortalCooldownRegistry;
   } = {},
 ) {
+  const transitionTickets: TransitionTicketIssuer =
+    options.transitionTickets ?? {
+      issue: () => Promise.resolve(undefined),
+    };
+  // Shared across every logical-map room when the server wires it, so the
+  // cooldown survives the transition that removes the source session.
+  const portalCooldowns =
+    options.portalCooldowns ?? new PortalCooldownRegistry();
   return class VillageRoom extends Room<{ state: VillageState }> {
     override state = new VillageState();
     readonly #pendingIntentions = new Map<
@@ -317,8 +334,15 @@ export function createVillageRoom(
     readonly #playerCombat = new Map<string, PlayerCombatState>();
     readonly #playerIdentity = new Map<
       string,
-      { characterId: string; partyId: string | undefined }
+      { userId: string; characterId: string; partyId: string | undefined }
     >();
+    readonly #sessionEntranceId = new Map<string, string>();
+    readonly #portalTransitions = new PortalTransitionCoordinator({
+      sourceMap: villageMap,
+      transitionTickets,
+      cooldowns: portalCooldowns,
+      now: this.#now,
+    });
     readonly #characterDialogueState = new Map<
       string,
       DialogueCharacterState
@@ -474,6 +498,12 @@ export function createVillageRoom(
       this.onMessage(CLIENT_MESSAGES.equipmentStateRequest, (client) => {
         this.#sendEquipmentState(client);
       });
+      this.onMessage(
+        CLIENT_MESSAGES.portalTransition,
+        (client, unsafeIntention: unknown) => {
+          void this.#handlePortalTransition(client, unsafeIntention);
+        },
+      );
 
       this.setSimulationInterval(
         () => this.#simulateFixedStep(),
@@ -1040,6 +1070,73 @@ export function createVillageRoom(
       }
     }
 
+    async #handlePortalTransition(
+      client: Client,
+      unsafeIntention: unknown,
+    ): Promise<void> {
+      const player = this.state.players.get(client.sessionId);
+      const identity = this.#playerIdentity.get(client.sessionId);
+      const outcome = await this.#portalTransitions.evaluate({
+        sessionId: client.sessionId,
+        unsafeIntention,
+        playerFoot: player ? { x: player.x, y: player.y } : undefined,
+        identity,
+        // A durable character's checkpoint is what AC4 recovery reads, so a
+        // configured checkpoint that fails must block the transition rather
+        // than strand the character at an unknown location. A development
+        // identity has no durable location row at all (same convention as
+        // `#questsForCharacter`), so there is nothing to lose and the
+        // transition proceeds.
+        checkpoint: () =>
+          this.#checkpointLocation &&
+          identity &&
+          !identity.characterId.startsWith("development:")
+            ? this.#checkpoint(client.sessionId, "online")
+            : Promise.resolve(true),
+      });
+      if (outcome.kind === "invalid") return;
+      if (outcome.kind === "rejected") {
+        client.send(SERVER_MESSAGES.transitionRejected, {
+          actionId: outcome.actionId,
+          code: outcome.code,
+        } satisfies TransitionRejectedMessage);
+        return;
+      }
+      client.send(SERVER_MESSAGES.transitionTicket, {
+        actionId: outcome.actionId,
+        ticket: outcome.ticket,
+        destinationRoomName: outcome.destinationRoomName,
+        destinationMapId: outcome.destinationMapId,
+        expiresAtMs: outcome.expiresAtMs,
+      } satisfies TransitionTicketMessage);
+      // Remove the source presence immediately: the client now holds a
+      // single-use ticket for the destination room, so leaving this one
+      // consented (not a drop) prevents both a duplicated presence and an
+      // unwanted reconnection grace window (AC3).
+      this.#removeSession(client.sessionId);
+      client.leave(4_000, "portal_transition");
+    }
+
+    #removeSession(sessionId: string): void {
+      this.#pendingIntentions.delete(sessionId);
+      this.#intentionViolations.delete(sessionId);
+      this.#lastProcessedSequences.delete(sessionId);
+      this.#playerCombat.delete(sessionId);
+      this.#playerIdentity.delete(sessionId);
+      this.#characterDialogueState.delete(sessionId);
+      this.#questSnapshots.delete(sessionId);
+      this.#equipmentSnapshots.delete(sessionId);
+      this.#dialogueSessions.delete(sessionId);
+      this.#lastInteractionAtMs.delete(sessionId);
+      this.#lastDialogueActionAtMs.delete(sessionId);
+      this.#joinedAtMs.delete(sessionId);
+      this.#lastCheckpointAtMs.delete(sessionId);
+      this.#disconnectedSessions.delete(sessionId);
+      this.#sessionEntranceId.delete(sessionId);
+      this.#portalTransitions.clearSession(sessionId);
+      this.state.players.delete(sessionId);
+    }
+
     override async onJoin(client: Client, unsafeOptions: unknown) {
       const options = joinOptionsSchema.safeParse(unsafeOptions);
       if (!options.success) {
@@ -1077,22 +1174,28 @@ export function createVillageRoom(
           ERROR_CODES.equipmentPersistenceUnavailable,
         );
       }
+      const entranceId = consumption.admission.entranceId;
+      const position = resolveSpawnPosition({
+        map: villageMap,
+        entranceId,
+        savedState: consumption.admission.characterState,
+        collision: villageCharacter.collision,
+      });
+      if (!position) {
+        throw new ServerError(4_227, ERROR_CODES.entranceNotFound);
+      }
+
       const player = new PublicPlayer();
       player.displayName = consumption.admission.displayName;
-      const spawn = villageMap.spawns.find(
-        (candidate) => candidate.entranceId === villageSlice.entranceId,
-      );
-      if (!spawn) throw new Error("Village player spawn is unavailable");
-      const savedPosition = validSavedPosition(
-        consumption.admission.characterState,
-      );
-      player.x = savedPosition?.x ?? spawn.x;
-      player.y = savedPosition?.y ?? spawn.y;
+      player.x = position.x;
+      player.y = position.y;
       player.appearance.assign(equipment.appearance);
       player.appearanceRevision = equipment.appearanceRevision;
       this.state.players.set(client.sessionId, player);
       this.#equipmentSnapshots.set(client.sessionId, equipment);
+      this.#sessionEntranceId.set(client.sessionId, entranceId);
       this.#playerIdentity.set(client.sessionId, {
+        userId: consumption.admission.userId,
         characterId: consumption.admission.characterId,
         partyId: consumption.admission.partyId,
       });
@@ -1127,35 +1230,21 @@ export function createVillageRoom(
         statuses: new Map(),
         recentActionIds: [],
       });
-      this.#checkpoint(client.sessionId, "online");
+      void this.#checkpoint(client.sessionId, "online");
       this.#sendCombatState(client);
       this.#sendQuestState(client);
       this.#sendEquipmentState(client);
     }
 
     override onLeave(client: Client) {
-      this.#checkpoint(client.sessionId, "offline");
-      this.#pendingIntentions.delete(client.sessionId);
-      this.#intentionViolations.delete(client.sessionId);
-      this.#lastProcessedSequences.delete(client.sessionId);
-      this.#playerCombat.delete(client.sessionId);
-      this.#playerIdentity.delete(client.sessionId);
-      this.#characterDialogueState.delete(client.sessionId);
-      this.#questSnapshots.delete(client.sessionId);
-      this.#equipmentSnapshots.delete(client.sessionId);
-      this.#dialogueSessions.delete(client.sessionId);
-      this.#lastInteractionAtMs.delete(client.sessionId);
-      this.#lastDialogueActionAtMs.delete(client.sessionId);
-      this.#joinedAtMs.delete(client.sessionId);
-      this.#lastCheckpointAtMs.delete(client.sessionId);
-      this.#disconnectedSessions.delete(client.sessionId);
-      this.state.players.delete(client.sessionId);
+      void this.#checkpoint(client.sessionId, "offline");
+      this.#removeSession(client.sessionId);
       options.recordLifecycle?.("removed");
     }
 
     override onDrop(client: Client) {
       if (!this.state.players.has(client.sessionId)) return;
-      this.#checkpoint(client.sessionId, "disconnected");
+      void this.#checkpoint(client.sessionId, "disconnected");
       this.#disconnectedSessions.add(client.sessionId);
       options.recordLifecycle?.("disconnected");
       void this.allowReconnection(client, this.#reconnectGraceSeconds).catch(
@@ -1165,7 +1254,7 @@ export function createVillageRoom(
 
     override onReconnect(client: Client) {
       this.#disconnectedSessions.delete(client.sessionId);
-      this.#checkpoint(client.sessionId, "online");
+      void this.#checkpoint(client.sessionId, "online");
       options.recordLifecycle?.("reconnected");
       this.#sendAuthoritativeMovement(client);
     }
@@ -1238,7 +1327,7 @@ export function createVillageRoom(
       for (const sessionId of this.state.players.keys()) {
         const lastCheckpointAtMs = this.#lastCheckpointAtMs.get(sessionId) ?? 0;
         if (this.state.serverTimeMs >= lastCheckpointAtMs + 5_000) {
-          this.#checkpoint(sessionId, "online");
+          void this.#checkpoint(sessionId, "online");
         }
       }
       const lifecycleEvents = this.#monsterLifecycle.tick(
@@ -1318,27 +1407,33 @@ export function createVillageRoom(
       }
     }
 
-    #checkpoint(
+    async #checkpoint(
       sessionId: string,
       connectionState: LocationCheckpointInput["connectionState"],
-    ): void {
-      if (!this.#checkpointLocation) return;
+    ): Promise<boolean> {
+      if (!this.#checkpointLocation) return false;
       const player = this.state.players.get(sessionId);
       const identity = this.#playerIdentity.get(sessionId);
+      const entranceId =
+        this.#sessionEntranceId.get(sessionId) ?? villageSlice.entranceId;
       const spawn = villageMap.spawns.find(
-        (candidate) => candidate.entranceId === villageSlice.entranceId,
+        (candidate) => candidate.entranceId === entranceId,
       );
-      if (!player || !identity || !spawn) return;
+      if (!player || !identity || !spawn) return false;
       this.#lastCheckpointAtMs.set(sessionId, this.state.serverTimeMs);
-      void this.#checkpointLocation({
-        characterId: identity.characterId,
-        logicalMapId: villageSlice.mapId,
-        entranceId: villageSlice.entranceId,
-        position: { x: player.x, y: player.y },
-        safeSpawn: { x: spawn.x, y: spawn.y },
-        connectionState,
-        now: new Date(this.state.serverTimeMs),
-      }).catch(() => undefined);
+      try {
+        return await this.#checkpointLocation({
+          characterId: identity.characterId,
+          logicalMapId: villageSlice.mapId,
+          entranceId,
+          position: { x: player.x, y: player.y },
+          safeSpawn: { x: spawn.x, y: spawn.y },
+          connectionState,
+          now: new Date(this.state.serverTimeMs),
+        });
+      } catch {
+        return false;
+      }
     }
 
     #sendCombatStateBySessionId(sessionId: string): void {
@@ -1453,51 +1548,6 @@ export function createVillageRoom(
       client.send(SERVER_MESSAGES.authoritativeMovement, snapshot);
     }
   };
-}
-
-function validSavedPosition(
-  state: DurableCharacterState | undefined,
-): { x: number; y: number } | undefined {
-  const location = state?.location;
-  if (
-    !location ||
-    location.logicalMapId !== villageSlice.mapId ||
-    !villageMap.spawns.some((spawn) => spawn.entranceId === location.entranceId)
-  ) {
-    return undefined;
-  }
-  const { x, y } = location.position;
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined;
-  const body = {
-    x:
-      x +
-      villageCharacter.collision.offsetX -
-      villageCharacter.collision.width / 2,
-    y:
-      y +
-      villageCharacter.collision.offsetY -
-      villageCharacter.collision.height / 2,
-    width: villageCharacter.collision.width,
-    height: villageCharacter.collision.height,
-  };
-  const insideBounds =
-    body.x >= villageMap.bounds.x &&
-    body.y >= villageMap.bounds.y &&
-    body.x + body.width <= villageMap.bounds.x + villageMap.bounds.width &&
-    body.y + body.height <= villageMap.bounds.y + villageMap.bounds.height;
-  if (!insideBounds) return undefined;
-  if (
-    villageMap.collision.some(
-      (obstacle) =>
-        body.x < obstacle.x + obstacle.width &&
-        body.x + body.width > obstacle.x &&
-        body.y < obstacle.y + obstacle.height &&
-        body.y + body.height > obstacle.y,
-    )
-  ) {
-    return undefined;
-  }
-  return { x, y };
 }
 
 function equipmentFailureCode(

@@ -12,7 +12,7 @@ import {
 } from "./dialogue.js";
 import { contentSchema } from "./index.js";
 import { compileClientQuestCatalog } from "./quests.js";
-import { compileTiledMap } from "./maps.js";
+import { compileTiledMap, validatePortalDestinations } from "./maps.js";
 
 const packageRoot = new URL("../", import.meta.url);
 const artifactDirectory = new URL("./artifacts/", import.meta.url);
@@ -81,6 +81,31 @@ async function compileCanonicalAssets(): Promise<void> {
         .join("\n")}`,
     );
   }
+  const forestMap = compileTiledMap(
+    "map:forest",
+    "content:village_m1_v2",
+    await readJson("maps/forest.tiled.json"),
+    manifest.data.collision,
+  );
+  if (!forestMap.success) {
+    throw new Error(
+      `Forest map compilation failed:\n${forestMap.issues
+        .map((issue) => `${issue.path}: ${issue.message}`)
+        .join("\n")}`,
+    );
+  }
+  const portalIssues = validatePortalDestinations([
+    map.server,
+    forestMap.server,
+  ]);
+  if (portalIssues.length > 0) {
+    throw new Error(
+      `Portal destination validation failed:\n${portalIssues
+        .map((issue) => `${issue.path}: ${issue.message}`)
+        .join("\n")}`,
+    );
+  }
+
   const dialogueIssues = validateDialogueInteractiveBindings(
     parsedDialogue,
     map.server.interactives.map((interactive) => interactive.id),
@@ -106,6 +131,18 @@ async function compileCanonicalAssets(): Promise<void> {
     writeFile(
       new URL("village-map.server.js", artifactDirectory),
       moduleSource(map.server),
+    ),
+    writeFile(
+      new URL("forest-map.js", artifactDirectory),
+      moduleSource(forestMap.client),
+    ),
+    writeFile(
+      new URL("forest-map.server.json", artifactDirectory),
+      `${JSON.stringify(forestMap.server, null, 2)}\n`,
+    ),
+    writeFile(
+      new URL("forest-map.server.js", artifactDirectory),
+      moduleSource(forestMap.server),
     ),
     writeFile(
       new URL("village-character.js", artifactDirectory),

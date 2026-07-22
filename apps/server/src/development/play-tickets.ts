@@ -1,15 +1,19 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
+import { forestSlice } from "@gameish/content/slices/forest";
 import { villageSlice } from "@gameish/content/slices/village";
 import { ERROR_CODES, type ErrorCode } from "@gameish/protocol";
+
+import { LOGICAL_MAPS } from "../rooms/logical-maps.js";
 
 export interface DevelopmentAdmission {
   userId: string;
   characterId: string;
   partyId: string | undefined;
   displayName: string;
-  logicalDestination: typeof villageSlice.mapId;
-  contentVersion: typeof villageSlice.contentVersion;
+  logicalDestination: string;
+  entranceId: string;
+  contentVersion: string;
   nonce: string;
   appearance: {
     rigId: string;
@@ -28,8 +32,15 @@ export type TicketConsumption =
   | { success: true; admission: DevelopmentAdmission }
   | { success: false; code: ErrorCode };
 
+interface StoredIdentity {
+  characterId: string;
+  displayName: string;
+  appearance: DevelopmentAdmission["appearance"];
+}
+
 export class DevelopmentPlayTickets {
   readonly #tickets = new Map<string, StoredTicket>();
+  readonly #identities = new Map<string, StoredIdentity>();
   readonly #now: () => number;
   readonly #timeToLiveMs: number;
 
@@ -40,30 +51,101 @@ export class DevelopmentPlayTickets {
 
   issue(
     displayName: string,
-    options: { partyId?: string | undefined } = {},
-  ): { ticket: string; expiresAt: number } {
+    options: {
+      partyId?: string | undefined;
+      /**
+       * Test-only override of the initial spawn's logical map/entrance.
+       * Real login always lands a character at the village's default
+       * entrance; this exists so headless tests can place a development
+       * identity directly at a named entrance (e.g. next to a portal)
+       * instead of spending real wall-clock time walking a full map,
+       * without adding any client-selectable "choose your spawn" surface
+       * (AC1 is about the client-facing join contract, which this does not
+       * touch — `/development/play-ticket` is already fail-closed outside
+       * development/test, per ADR-0007).
+       */
+      mapId?: string | undefined;
+      entranceId?: string | undefined;
+    } = {},
+  ): { ticket: string; expiresAt: number; mapId: string } | undefined {
     this.#purgeExpired();
+    // Even on a development-only endpoint the override is untrusted input:
+    // it must name a real logical map and a real named entrance on it, or no
+    // ticket is issued at all.
+    const mapId = options.mapId ?? villageSlice.mapId;
+    const destinationMap = LOGICAL_MAPS[mapId];
+    if (!destinationMap) return undefined;
+    const entranceId =
+      options.entranceId ??
+      (mapId === villageSlice.mapId
+        ? villageSlice.entranceId
+        : forestSlice.entranceId);
+    if (!destinationMap.spawns.some((spawn) => spawn.entranceId === entranceId))
+      return undefined;
+    const userId = `development:user:${randomUUID()}`;
+    const characterId = `development:character:${randomUUID()}`;
+    const appearance = {
+      rigId: villageSlice.rigId,
+      baseLayerId: "base",
+      armorLayerId: "tunic",
+    };
+    this.#identities.set(userId, { characterId, displayName, appearance });
     const ticket = randomBytes(32).toString("base64url");
     const expiresAt = this.#now() + this.#timeToLiveMs;
     this.#tickets.set(ticket, {
       admission: {
-        userId: `development:user:${randomUUID()}`,
-        characterId: `development:character:${randomUUID()}`,
+        userId,
+        characterId,
         partyId: options.partyId,
         displayName,
-        logicalDestination: villageSlice.mapId,
-        contentVersion: villageSlice.contentVersion,
+        logicalDestination: mapId,
+        entranceId,
+        contentVersion: destinationMap.contentVersion,
         nonce: randomUUID(),
-        appearance: {
-          rigId: villageSlice.rigId,
-          baseLayerId: "base",
-          armorLayerId: "tunic",
-        },
+        appearance,
       },
       expiresAt,
       consumed: false,
     });
-    return { ticket, expiresAt };
+    return { ticket, expiresAt, mapId };
+  }
+
+  /**
+   * Issues a ticket that continues an already-issued development identity
+   * (same userId/characterId/displayName/appearance) at a new destination
+   * map/entrance, for portal transitions initiated from inside a room. The
+   * identity must have been created by a prior `issue()` call.
+   */
+  issueTransition(input: {
+    userId: string;
+    characterId: string;
+    destinationMapId: string;
+    destinationEntranceId: string;
+    contentVersion: string;
+  }): { ticket: string; expiresAtMs: number } | undefined {
+    this.#purgeExpired();
+    const identity = this.#identities.get(input.userId);
+    if (!identity || identity.characterId !== input.characterId) {
+      return undefined;
+    }
+    const ticket = randomBytes(32).toString("base64url");
+    const expiresAtMs = this.#now() + this.#timeToLiveMs;
+    this.#tickets.set(ticket, {
+      admission: {
+        userId: input.userId,
+        characterId: input.characterId,
+        partyId: undefined,
+        displayName: identity.displayName,
+        logicalDestination: input.destinationMapId,
+        entranceId: input.destinationEntranceId,
+        contentVersion: input.contentVersion,
+        nonce: randomUUID(),
+        appearance: identity.appearance,
+      },
+      expiresAt: expiresAtMs,
+      consumed: false,
+    });
+    return { ticket, expiresAtMs };
   }
 
   consume(ticket: string): TicketConsumption {

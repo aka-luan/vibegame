@@ -74,6 +74,7 @@ export interface PlayTicketInput {
   userId: string;
   characterId: string;
   logicalDestination: string;
+  entranceId: string;
   contentVersion: string;
   nonce: string;
   now: Date;
@@ -86,6 +87,7 @@ export interface PlayTicketAdmission {
   partyId?: string | undefined;
   displayName: string;
   logicalDestination: string;
+  entranceId: string;
   contentVersion: string;
   nonce: string;
   appearance: {
@@ -440,6 +442,7 @@ export class GuestAccountRepository {
       userId: input.userId,
       characterId: input.characterId,
       logicalDestination: input.logicalDestination,
+      entranceId: input.entranceId,
       contentVersion: input.contentVersion,
       nonce: input.nonce,
       createdAt: input.now,
@@ -486,6 +489,7 @@ export class GuestAccountRepository {
         characterId: playTickets.characterId,
         displayName: characters.name,
         logicalDestination: playTickets.logicalDestination,
+        entranceId: playTickets.entranceId,
         contentVersion: playTickets.contentVersion,
         nonce: playTickets.nonce,
         rigId: characterAppearance.rigId,
@@ -510,6 +514,7 @@ export class GuestAccountRepository {
         characterId: admission.characterId,
         displayName: admission.displayName,
         logicalDestination: admission.logicalDestination,
+        entranceId: admission.entranceId,
         contentVersion: admission.contentVersion,
         nonce: admission.nonce,
         appearance: {
