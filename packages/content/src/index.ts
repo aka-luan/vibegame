@@ -5,6 +5,8 @@ import { dialogueCatalogSchema } from "./dialogue.js";
 import { equipmentCatalogSchema } from "./equipment.js";
 import { questCatalogSchema } from "./quests.js";
 
+export type { ClientMapArtifact, ServerMapArtifact } from "./maps.js";
+
 const namespacedId = z
   .string()
   .regex(

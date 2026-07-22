@@ -16,6 +16,7 @@ import {
   SERVER_MESSAGES,
   type MapChatMessage,
 } from "../packages/protocol/src/index.js";
+import { forestSlice } from "../packages/content/src/slices/forest.js";
 import { villageSlice } from "../packages/content/src/slices/village.js";
 
 let runningServer: RunningFoundationServer | undefined;
@@ -58,13 +59,19 @@ class TestPlayTickets implements PlayTicketConsumer {
     userId: string,
     characterId: string,
     displayName: string,
+    destination: {
+      mapId: string;
+      entranceId: string;
+      contentVersion: string;
+    } = villageSlice,
   ) {
     this.#tickets.set(ticket, {
       userId,
       characterId,
       displayName,
-      logicalDestination: villageSlice.mapId,
-      contentVersion: villageSlice.contentVersion,
+      logicalDestination: destination.mapId,
+      entranceId: destination.entranceId,
+      contentVersion: destination.contentVersion,
       nonce: `nonce:${ticket}`,
       appearance: {
         rigId: villageSlice.rigId,
@@ -107,11 +114,12 @@ async function joinWithTicket(
   endpoint: string,
   ticket: string,
   create = false,
+  roomName: string = ROOM_NAMES.village,
 ) {
   const client = new Client(endpoint);
   const room = create
-    ? await client.create(ROOM_NAMES.village, { ticket })
-    : await client.joinOrCreate(ROOM_NAMES.village, { ticket });
+    ? await client.create(roomName, { ticket })
+    : await client.joinOrCreate(roomName, { ticket });
   joinedRooms.push(room);
   return room;
 }
@@ -257,6 +265,51 @@ describe("controlled map chat", () => {
       expect(otherMessages).toHaveLength(1);
     });
     expect(otherMessages[0]?.displayName).toBe("Other Ranger");
+  });
+
+  it("delivers only within one forest map instance after travel support lands", async () => {
+    const tickets = new TestPlayTickets();
+    tickets.issue(
+      "forest-sender",
+      "user:forest-sender",
+      "development:character:forest-sender",
+      "Forest Sender",
+      forestSlice,
+    );
+    tickets.issue(
+      "forest-observer",
+      "user:forest-observer",
+      "development:character:forest-observer",
+      "Forest Observer",
+      forestSlice,
+    );
+    const endpoint = await startChatServer({
+      enabled: true,
+      playTickets: tickets,
+    });
+    const sender = await joinWithTicket(
+      endpoint,
+      "forest-sender",
+      true,
+      ROOM_NAMES.forest,
+    );
+    const observer = await joinWithTicket(
+      endpoint,
+      "forest-observer",
+      false,
+      ROOM_NAMES.forest,
+    );
+    const observed: MapChatMessage[] = [];
+    observer.onMessage(SERVER_MESSAGES.mapChat, (message) => {
+      observed.push(message as MapChatMessage);
+    });
+
+    sender.send(CLIENT_MESSAGES.mapChat, { text: "Hello, forest!" });
+    await vi.waitFor(() => expect(observed).toHaveLength(1));
+    expect(observed[0]).toMatchObject({
+      displayName: "Forest Sender",
+      text: "Hello, forest!",
+    });
   });
 
   it("records metadata without message or identity fields", async () => {

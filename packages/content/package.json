@@ -12,6 +12,10 @@
       "types": "./src/slices/village.ts",
       "default": "./dist/slices/village.js"
     },
+    "./slices/forest": {
+      "types": "./src/slices/forest.ts",
+      "default": "./dist/slices/forest.js"
+    },
     "./canonical": {
       "types": "./src/canonical.ts",
       "default": "./dist/canonical.js"
@@ -31,6 +35,14 @@
     "./village-map-server": {
       "types": "./src/village-map-server-artifact.d.ts",
       "default": "./dist/artifacts/village-map.server.js"
+    },
+    "./forest-map": {
+      "types": "./src/forest-map-artifact.d.ts",
+      "default": "./dist/artifacts/forest-map.js"
+    },
+    "./forest-map-server": {
+      "types": "./src/forest-map-server-artifact.d.ts",
+      "default": "./dist/artifacts/forest-map.server.js"
     },
     "./village-character": {
       "types": "./src/village-character-artifact.d.ts",

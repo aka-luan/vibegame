@@ -18,7 +18,14 @@ import {
   type PlayTicketConsumer,
 } from "./identity/play-tickets.js";
 import { PrivacySpikeRoom } from "./rooms/privacy-spike-room.js";
+import { createForestRoom } from "./rooms/forest-room.js";
+import { PortalCooldownRegistry } from "./rooms/portal-transition-handler.js";
 import { createVillageRoom } from "./rooms/village-room.js";
+import {
+  DevelopmentTransitionTicketIssuer,
+  FallbackTransitionTicketIssuer,
+  type TransitionTicketIssuer,
+} from "./identity/transition-tickets.js";
 import type { QuestPersistence } from "./quests/persistence.js";
 import type { RewardPersistence } from "./rewards/persistence.js";
 import type { EquipmentPersistence } from "./equipment/persistence.js";
@@ -57,6 +64,7 @@ export interface StartFoundationServerOptions {
     | undefined;
   checkpointLocation?:
     ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
+  transitionTickets?: TransitionTicketIssuer | undefined;
   logger?: boolean | undefined;
 }
 
@@ -122,6 +130,16 @@ export async function startFoundationServer(
     logger: options.logger,
   });
   await app.ready();
+  const recordMapChat: NonNullable<
+    StartFoundationServerOptions["recordMapChat"]
+  > =
+    options.recordMapChat ??
+    ((details) => {
+      app.log.info(
+        { event: "map_chat", ...details },
+        "Map chat message handled",
+      );
+    });
 
   const fastifyListener = app.server.listeners("request")[0] as
     RequestListener | undefined;
@@ -140,6 +158,19 @@ export async function startFoundationServer(
   });
   const mapChatRateLimiter = new MapChatRateLimiter();
   gameServer.define("privacy_spike", PrivacySpikeRoom);
+  const developmentTransitionTickets = developmentPlayTickets
+    ? new DevelopmentTransitionTicketIssuer(developmentPlayTickets)
+    : undefined;
+  const transitionTickets =
+    developmentTransitionTickets && options.transitionTickets
+      ? new FallbackTransitionTicketIssuer([
+          developmentTransitionTickets,
+          options.transitionTickets,
+        ])
+      : (options.transitionTickets ?? developmentTransitionTickets);
+  // One registry shared by every logical-map room: the portal cooldown
+  // follows the character across the transition, not the source session.
+  const portalCooldowns = new PortalCooldownRegistry();
   if (playTickets) {
     gameServer.define(
       ROOM_NAMES.village,
@@ -177,29 +208,34 @@ export async function startFoundationServer(
         developmentQuestEnabled: options.developmentLoginEnabled === true,
         mapChatEnabled: options.mapChatEnabled === true,
         mapChatRateLimiter,
-        ...(options.recordMapChat === undefined
-          ? {
-              recordMapChat(details: {
-                outcome: "accepted" | "rejected";
-                code?:
-                  | "CHAT_DISABLED"
-                  | "INVALID_CHAT_MESSAGE"
-                  | "CHAT_RATE_LIMITED";
-                utf8Bytes?: number;
-                lineCount?: number;
-              }) {
-                app.log.info(
-                  { event: "map_chat", ...details },
-                  "Map chat message handled",
-                );
-              },
-            }
-          : { recordMapChat: options.recordMapChat }),
+        recordMapChat,
         ...(options.checkpointLocation === undefined
           ? {}
           : { checkpointLocation: options.checkpointLocation }),
+        ...(transitionTickets === undefined ? {} : { transitionTickets }),
+        portalCooldowns,
         recordLifecycle(event) {
           app.log.info({ event }, "Village connection lifecycle changed");
+        },
+      }),
+    );
+    gameServer.define(
+      ROOM_NAMES.forest,
+      createForestRoom(playTickets, {
+        ...(options.now === undefined ? {} : { now: options.now }),
+        ...(options.reconnectGraceSeconds === undefined
+          ? {}
+          : { reconnectGraceSeconds: options.reconnectGraceSeconds }),
+        ...(options.checkpointLocation === undefined
+          ? {}
+          : { checkpointLocation: options.checkpointLocation }),
+        ...(transitionTickets === undefined ? {} : { transitionTickets }),
+        portalCooldowns,
+        mapChatEnabled: options.mapChatEnabled === true,
+        mapChatRateLimiter,
+        recordMapChat,
+        recordLifecycle(event) {
+          app.log.info({ event }, "Forest connection lifecycle changed");
         },
       }),
     );

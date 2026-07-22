@@ -49,12 +49,19 @@ export const ERROR_CODES = {
   invalidPlayTicket: "INVALID_PLAY_TICKET",
   playTicketExpired: "PLAY_TICKET_EXPIRED",
   playTicketReplayed: "PLAY_TICKET_REPLAYED",
+  portalNotFound: "PORTAL_NOT_FOUND",
+  portalOutOfRange: "PORTAL_OUT_OF_RANGE",
+  portalOnCooldown: "PORTAL_ON_COOLDOWN",
+  mapLocked: "MAP_LOCKED",
+  entranceNotFound: "ENTRANCE_NOT_FOUND",
+  transitionUnavailable: "TRANSITION_UNAVAILABLE",
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
 
 export const ROOM_NAMES = {
   village: "village",
+  forest: "forest",
 } as const;
 
 export const CLIENT_MESSAGES = {
@@ -70,6 +77,7 @@ export const CLIENT_MESSAGES = {
   equipmentUnequip: "equipment_unequip",
   equipmentStateRequest: "equipment_state_request",
   mapChat: "map_chat",
+  portalTransition: "portal_transition",
 } as const;
 
 export const SERVER_MESSAGES = {
@@ -94,6 +102,8 @@ export const SERVER_MESSAGES = {
   chatAvailability: "chat_availability",
   mapChat: "map_chat",
   chatRejected: "chat_rejected",
+  transitionTicket: "transition_ticket",
+  transitionRejected: "transition_rejected",
 } as const;
 
 export interface MapChatIntention {
@@ -232,6 +242,16 @@ export interface PublicVillageState {
   monsters: PublicRoomStateMap<PublicMonsterState>;
 }
 
+/**
+ * The public forest room state shape. The forest is traversable-only for
+ * this issue (no monsters, no interactives) so it carries no `monsters`
+ * map at all — there is nothing to synchronize there yet.
+ */
+export interface PublicForestState {
+  serverTimeMs: number;
+  players: PublicRoomStateMap<PublicPlayerState>;
+}
+
 export interface CombatPublicEvent {
   kind:
     | "spawned"
@@ -351,4 +371,22 @@ export interface QuestRewardMessage {
   quantity: number;
   experience: number;
   currency: number;
+}
+
+export interface PortalTransitionIntention {
+  actionId: string;
+  portalId: string;
+}
+
+export interface TransitionTicketMessage {
+  actionId: string;
+  ticket: string;
+  destinationRoomName: string;
+  destinationMapId: string;
+  expiresAtMs: number;
+}
+
+export interface TransitionRejectedMessage {
+  actionId: string;
+  code: ErrorCode;
 }
