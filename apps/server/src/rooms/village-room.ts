@@ -273,6 +273,7 @@ export function createVillageRoom(
     developmentEquipmentEnabled?: boolean;
     developmentQuestEnabled?: boolean;
     mapChatEnabled?: boolean;
+    mapChatRateLimiter?: MapChatRateLimiter;
     recordMapChat?: (details: {
       outcome: "accepted" | "rejected";
       code?: "CHAT_DISABLED" | "INVALID_CHAT_MESSAGE" | "CHAT_RATE_LIMITED";
@@ -321,7 +322,8 @@ export function createVillageRoom(
     readonly #developmentEquipmentEnabled =
       options.developmentEquipmentEnabled ?? false;
     readonly #mapChatEnabled = options.mapChatEnabled ?? false;
-    readonly #mapChatRateLimiter = new MapChatRateLimiter();
+    readonly #mapChatRateLimiter =
+      options.mapChatRateLimiter ?? new MapChatRateLimiter();
     readonly #logEquipmentPersistenceFailure =
       options.logEquipmentPersistenceFailure;
     readonly #checkpointLocation = options.checkpointLocation;
@@ -331,7 +333,7 @@ export function createVillageRoom(
     readonly #playerCombat = new Map<string, PlayerCombatState>();
     readonly #playerIdentity = new Map<
       string,
-      { characterId: string; partyId: string | undefined }
+      { userId: string; characterId: string; partyId: string | undefined }
     >();
     readonly #characterDialogueState = new Map<
       string,
@@ -531,7 +533,7 @@ export function createVillageRoom(
       if (!identity || !player) return;
       if (
         !this.#mapChatRateLimiter.allow(
-          identity.characterId,
+          identity.userId,
           this.state.serverTimeMs,
         )
       ) {
@@ -1172,6 +1174,7 @@ export function createVillageRoom(
       this.state.players.set(client.sessionId, player);
       this.#equipmentSnapshots.set(client.sessionId, equipment);
       this.#playerIdentity.set(client.sessionId, {
+        userId: consumption.admission.userId,
         characterId: consumption.admission.characterId,
         partyId: consumption.admission.partyId,
       });

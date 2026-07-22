@@ -6,7 +6,7 @@ const accountMigration = runAccountE2E ? "pnpm db:migrate && " : "";
 
 const serverCommand = runViteDevE2E
   ? `${accountMigration}DATABASE_URL=postgres://gameish:gameish@localhost:5432/gameish PUBLIC_ORIGIN=http://127.0.0.1:55173 NODE_ENV=test PORT=3567 pnpm --filter @gameish/server dev`
-  : `${accountMigration}pnpm --filter @gameish/content build && pnpm --filter @gameish/world build && pnpm --filter @gameish/protocol build && pnpm --filter @gameish/database build && pnpm --filter @gameish/server build && DEVELOPMENT_LOGIN_ENABLED=true PUBLIC_ORIGIN=http://127.0.0.1:55173 NODE_ENV=test PORT=3567 pnpm --filter @gameish/server start`;
+  : `${accountMigration}pnpm --filter @gameish/content build && pnpm --filter @gameish/world build && pnpm --filter @gameish/protocol build && pnpm --filter @gameish/database build && pnpm --filter @gameish/server build && CONTROLLED_MAP_CHAT_ENABLED=true DEVELOPMENT_LOGIN_ENABLED=true PUBLIC_ORIGIN=http://127.0.0.1:55173 NODE_ENV=test PORT=3567 pnpm --filter @gameish/server start`;
 
 const webCommand = runViteDevE2E
   ? "GAME_SERVER_PORT=3567 pnpm --filter @gameish/web exec vite --host 127.0.0.1 --port 55173"

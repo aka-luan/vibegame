@@ -298,6 +298,16 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     const focusChat = (event: KeyboardEvent) => {
       if (event.key !== "Enter" || combatSnapshot.dialogueNode) return;
       if (document.activeElement === chatInput.current) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          ["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA"].includes(
+            target.tagName,
+          ))
+      ) {
+        return;
+      }
       event.preventDefault();
       chatInput.current?.focus();
     };

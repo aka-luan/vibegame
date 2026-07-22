@@ -22,6 +22,7 @@ import { createVillageRoom } from "./rooms/village-room.js";
 import type { QuestPersistence } from "./quests/persistence.js";
 import type { RewardPersistence } from "./rewards/persistence.js";
 import type { EquipmentPersistence } from "./equipment/persistence.js";
+import { MapChatRateLimiter } from "./chat/map-chat.js";
 
 export interface StartFoundationServerOptions {
   host: string;
@@ -137,6 +138,7 @@ export async function startFoundationServer(
     gracefullyShutdown: false,
     greet: false,
   });
+  const mapChatRateLimiter = new MapChatRateLimiter();
   gameServer.define("privacy_spike", PrivacySpikeRoom);
   if (playTickets) {
     gameServer.define(
@@ -174,6 +176,7 @@ export async function startFoundationServer(
         developmentEquipmentEnabled: options.developmentLoginEnabled === true,
         developmentQuestEnabled: options.developmentLoginEnabled === true,
         mapChatEnabled: options.mapChatEnabled === true,
+        mapChatRateLimiter,
         ...(options.recordMapChat === undefined
           ? {
               recordMapChat(details: {

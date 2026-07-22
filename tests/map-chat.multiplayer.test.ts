@@ -5,6 +5,10 @@ import {
   startFoundationServer,
   type RunningFoundationServer,
 } from "../apps/server/src/server.js";
+import type {
+  PlayTicketConsumer,
+  PlayTicketConsumption,
+} from "../apps/server/src/identity/play-tickets.js";
 import {
   CLIENT_MESSAGES,
   ERROR_CODES,
@@ -12,6 +16,7 @@ import {
   SERVER_MESSAGES,
   type MapChatMessage,
 } from "../packages/protocol/src/index.js";
+import { villageSlice } from "../packages/content/src/slices/village.js";
 
 let runningServer: RunningFoundationServer | undefined;
 const joinedRooms: Room[] = [];
@@ -25,6 +30,7 @@ afterEach(async () => {
 async function startChatServer(options: {
   enabled: boolean;
   recordMapChat?: (details: Record<string, unknown>) => void;
+  playTickets?: PlayTicketConsumer;
 }) {
   runningServer = await startFoundationServer({
     host: "127.0.0.1",
@@ -35,9 +41,47 @@ async function startChatServer(options: {
     mapChatEnabled: options.enabled,
     runtimeEnvironment: "test",
     now: () => 12_345,
+    ...(options.playTickets ? { playTickets: options.playTickets } : {}),
     ...(options.recordMapChat ? { recordMapChat: options.recordMapChat } : {}),
   });
   return `http://127.0.0.1:${String(runningServer.port)}`;
+}
+
+class TestPlayTickets implements PlayTicketConsumer {
+  readonly #tickets = new Map<
+    string,
+    Extract<PlayTicketConsumption, { success: true }>["admission"]
+  >();
+
+  issue(
+    ticket: string,
+    userId: string,
+    characterId: string,
+    displayName: string,
+  ) {
+    this.#tickets.set(ticket, {
+      userId,
+      characterId,
+      displayName,
+      logicalDestination: villageSlice.mapId,
+      contentVersion: villageSlice.contentVersion,
+      nonce: `nonce:${ticket}`,
+      appearance: {
+        rigId: villageSlice.rigId,
+        baseLayerId: "base",
+        armorLayerId: "tunic",
+      },
+    });
+  }
+
+  consume(ticket: string): PlayTicketConsumption {
+    const admission = this.#tickets.get(ticket);
+    if (!admission) {
+      return { success: false, code: ERROR_CODES.invalidPlayTicket };
+    }
+    this.#tickets.delete(ticket);
+    return { success: true, admission };
+  }
 }
 
 async function issueTicket(endpoint: string, displayName: string) {
@@ -52,6 +96,19 @@ async function issueTicket(endpoint: string, displayName: string) {
 async function join(endpoint: string, displayName: string, create = false) {
   const client = new Client(endpoint);
   const ticket = await issueTicket(endpoint, displayName);
+  const room = create
+    ? await client.create(ROOM_NAMES.village, { ticket })
+    : await client.joinOrCreate(ROOM_NAMES.village, { ticket });
+  joinedRooms.push(room);
+  return room;
+}
+
+async function joinWithTicket(
+  endpoint: string,
+  ticket: string,
+  create = false,
+) {
+  const client = new Client(endpoint);
   const room = create
     ? await client.create(ROOM_NAMES.village, { ticket })
     : await client.joinOrCreate(ROOM_NAMES.village, { ticket });
@@ -144,6 +201,62 @@ describe("controlled map chat", () => {
       expect(rejections).toContain(ERROR_CODES.invalidChatMessage);
       expect(rejections).toContain(ERROR_CODES.chatRateLimited);
     });
+  });
+
+  it("retains one user bucket across characters and room rejoin while isolating another user", async () => {
+    const tickets = new TestPlayTickets();
+    tickets.issue(
+      "first",
+      "user:returning",
+      "development:character:first",
+      "First Ranger",
+    );
+    tickets.issue(
+      "returning",
+      "user:returning",
+      "development:character:second",
+      "Second Ranger",
+    );
+    tickets.issue(
+      "other",
+      "user:other",
+      "development:character:other",
+      "Other Ranger",
+    );
+    const endpoint = await startChatServer({
+      enabled: true,
+      playTickets: tickets,
+    });
+    const first = await joinWithTicket(endpoint, "first", true);
+    const firstMessages: MapChatMessage[] = [];
+    first.onMessage(SERVER_MESSAGES.mapChat, (message) => {
+      firstMessages.push(message as MapChatMessage);
+    });
+    for (let index = 0; index < 4; index += 1) {
+      first.send(CLIENT_MESSAGES.mapChat, { text: `first ${index}` });
+    }
+    await vi.waitFor(() => expect(firstMessages).toHaveLength(4));
+    joinedRooms.splice(joinedRooms.indexOf(first), 1);
+    await first.leave();
+
+    const returning = await joinWithTicket(endpoint, "returning", true);
+    const other = await joinWithTicket(endpoint, "other");
+    const returningRejections: string[] = [];
+    const otherMessages: MapChatMessage[] = [];
+    returning.onMessage(SERVER_MESSAGES.chatRejected, (message) => {
+      returningRejections.push((message as { code: string }).code);
+    });
+    other.onMessage(SERVER_MESSAGES.mapChat, (message) => {
+      otherMessages.push(message as MapChatMessage);
+    });
+
+    returning.send(CLIENT_MESSAGES.mapChat, { text: "new character" });
+    other.send(CLIENT_MESSAGES.mapChat, { text: "separate user" });
+    await vi.waitFor(() => {
+      expect(returningRejections).toContain(ERROR_CODES.chatRateLimited);
+      expect(otherMessages).toHaveLength(1);
+    });
+    expect(otherMessages[0]?.displayName).toBe("Other Ranger");
   });
 
   it("records metadata without message or identity fields", async () => {
