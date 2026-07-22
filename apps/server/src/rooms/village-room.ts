@@ -1395,7 +1395,7 @@ export function createVillageRoom(
         combatCatalog: this.#combatCatalog, clock: () => this.state.serverTimeMs, random: this.#rewardRng,
       });
       for (const grant of settlement.grants) {
-        void this.#applyQuestObjectiveProgress(grant.characterId, grant.completionId, sourceMonsterId); if (!grant.reward) continue;
+        void this.#applyQuestObjectiveProgress(grant.characterId, grant.objectiveEventId, sourceMonsterId); if (!grant.reward) continue;
         void this.#rewardPersistence.grant(grant.reward).then(() => {
           void this.#reloadEquipment(grant.recipientSessionId, grant.characterId, "reward_reload");
           this.clients.find((client) => client.sessionId === grant.recipientSessionId)

@@ -29,7 +29,7 @@ export interface DefeatedMonsterIdentity {
 export interface CharacterRewardSettlement {
   characterId: string;
   recipientSessionId: string;
-  completionId: string;
+  objectiveEventId: string;
   reward: RewardGrant | undefined;
 }
 
@@ -108,7 +108,7 @@ export function settleDefeat(input: {
     (definition) =>
       definition.monsterId === input.defeatedMonster.sourceMonsterId,
   );
-  const completionId = `quest-event:${input.roomInstanceId}:${input.defeatedMonster.entityId}:${String(input.defeatSequence)}`;
+  const objectiveEventId = `quest-event:${input.roomInstanceId}:${input.defeatedMonster.entityId}:${String(input.defeatSequence)}`;
 
   return {
     grants: eligibleCharacters.map((characterId) => {
@@ -118,7 +118,7 @@ export function settleDefeat(input: {
       return {
         characterId,
         recipientSessionId,
-        completionId,
+        objectiveEventId,
         reward: loot
           ? {
               grantId: rewardGrantId(

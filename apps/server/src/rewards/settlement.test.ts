@@ -170,7 +170,7 @@ describe("reward settlement", () => {
     ]);
   });
 
-  it("constructs deterministic grant and completion ids", () => {
+  it("constructs deterministic grant and objective event ids", () => {
     const run = () =>
       settlement({
         participants: [{ characterId: "character:a", atMs: 1_000 }],
@@ -179,7 +179,7 @@ describe("reward settlement", () => {
 
     expect(run()).toEqual(run());
     expect(run()).toMatchObject({
-      completionId: "quest-event:room:1:monster:mossback:1:2",
+      objectiveEventId: "quest-event:room:1:monster:mossback:1:2",
       reward: {
         grantId: "reward:room:1:monster:mossback:1:2:character:a",
       },
