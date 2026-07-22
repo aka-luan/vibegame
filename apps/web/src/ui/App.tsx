@@ -333,14 +333,29 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     if (!connectedPresence) return;
     if (!combatSnapshot.currentMapId) return;
     if (renderedMapId.current === combatSnapshot.currentMapId) return;
-    renderedMapId.current = combatSnapshot.currentMapId;
+    const destinationMapId = combatSnapshot.currentMapId;
+    renderedMapId.current = destinationMapId;
     renderer.current?.destroy();
-    renderer.current = createWorldRenderer(
-      worldRoot,
-      connectedPresence,
-      mapArtifactFor(combatSnapshot.currentMapId),
-      setSnapshot,
-    );
+    renderer.current = null;
+    // Phaser tears a game down on the next step of its loop rather than
+    // synchronously, so building the destination renderer in the same task
+    // races the outgoing one: whichever canvas the pending teardown reaches
+    // last is the one removed from the parent. Waiting a frame lets the old
+    // canvas go first, leaving exactly one canvas mounted.
+    let cancelled = false;
+    const frame = requestAnimationFrame(() => {
+      if (cancelled) return;
+      renderer.current = createWorldRenderer(
+        worldRoot,
+        connectedPresence,
+        mapArtifactFor(destinationMapId),
+        setSnapshot,
+      );
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
   }, [combatSnapshot.currentMapId, worldRoot]);
 
   const estimatedServerTimeMs = clockMs + combatSnapshot.serverTimeOffsetMs;

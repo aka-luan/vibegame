@@ -70,6 +70,9 @@ class PublicPlayer extends Schema {
   @type("string")
   animation: PublicPlayerState["animation"] = "idle";
 
+  @type("number")
+  appearanceRevision = 0;
+
   @type(PublicAppearance)
   appearance = new PublicAppearance();
 }
@@ -267,7 +270,15 @@ export function createForestRoom(
       player.displayName = consumption.admission.displayName;
       player.x = position.x;
       player.y = position.y;
-      player.appearance.assign(consumption.admission.appearance);
+      // The forest is traversable-only, so it never mutates equipment; it
+      // publishes the appearance and revision the character already carries
+      // so clients that travelled from the village keep a consistent view.
+      player.appearance.assign(
+        consumption.admission.characterState?.appearance ??
+          consumption.admission.appearance,
+      );
+      player.appearanceRevision =
+        consumption.admission.characterState?.appearanceRevision ?? 0;
       this.state.players.set(client.sessionId, player);
       this.#sessionEntranceId.set(client.sessionId, entranceId);
       this.#playerIdentity.set(client.sessionId, {

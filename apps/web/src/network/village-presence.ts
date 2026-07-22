@@ -517,7 +517,15 @@ async function connectVillage(
       lastTransitionErrorCode,
     };
     afterNetworkDelay(() => {
-      for (const listener of listeners) listener(snapshot);
+      // Transitions add and remove subscribers while snapshots are in
+      // flight, so one failing listener must not starve the others.
+      for (const listener of listeners) {
+        try {
+          listener(snapshot);
+        } catch {
+          // A subscriber's own failure is not a presence failure.
+        }
+      }
     });
   };
 

@@ -516,6 +516,12 @@ export function createWorldRenderer(
   return {
     destroy() {
       movementInput?.destroy();
+      // A portal transition rebuilds the renderer against the destination
+      // map, so the outgoing scene must drop its presence subscription
+      // here: `game.destroy` does not run the scene's `shutdown`, and a
+      // subscription surviving its scene would keep applying snapshots to
+      // destroyed Phaser objects.
+      scene.shutdown();
       game.destroy(true);
     },
     focus() {

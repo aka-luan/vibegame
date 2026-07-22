@@ -8,7 +8,6 @@ import villageDialogue from "@gameish/content/village-dialogue-server";
 import villageQuests from "@gameish/content/village-quests-server";
 import { villageSlice } from "@gameish/content/slices/village";
 import type {
-  DurableCharacterState,
   DurableEquipmentSnapshot,
   LocationCheckpointInput,
 } from "@gameish/database";
