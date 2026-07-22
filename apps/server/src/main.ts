@@ -9,6 +9,7 @@ import { parseServerConfig } from "./config.js";
 import { startFoundationServer } from "./server.js";
 import { GuestAccountService } from "./identity/guest-account.js";
 import { DatabasePlayTickets } from "./identity/play-tickets.js";
+import { PostgresTransitionTicketIssuer } from "./identity/transition-tickets.js";
 import {
   PostgresQuestPersistence,
   PostgresRewardPersistence,
@@ -22,6 +23,9 @@ const accountRepository = new GuestAccountRepository(database.db);
 const durableState = new DurableStateRepository(database.db);
 const accountService = new GuestAccountService(accountRepository);
 const playTickets = new DatabasePlayTickets(accountRepository);
+const transitionTickets = new PostgresTransitionTicketIssuer(
+  accountRepository,
+);
 const questPersistence = new PostgresQuestPersistence(durableState);
 const rewardPersistence = new PostgresRewardPersistence(durableState);
 const equipmentPersistence = new PostgresEquipmentPersistence(durableState);
@@ -38,6 +42,7 @@ const server = await startFoundationServer({
   readinessProbe: database,
   accountService,
   playTickets,
+  transitionTickets,
   questPersistence,
   rewardPersistence,
   equipmentPersistence,

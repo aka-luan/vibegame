@@ -60,6 +60,30 @@ export class PostgresTransitionTicketIssuer implements TransitionTicketIssuer {
   }
 }
 
+/**
+ * Tries each issuer in order and returns the first successful issuance.
+ * Mirrors `FallbackPlayTickets`: lets a room accept both development-gated
+ * identities (in-memory) and real accounts (Postgres) with a single
+ * `TransitionTicketIssuer` wired in.
+ */
+export class FallbackTransitionTicketIssuer implements TransitionTicketIssuer {
+  constructor(readonly issuers: readonly TransitionTicketIssuer[]) {}
+
+  async issue(input: {
+    userId: string;
+    characterId: string;
+    destinationMapId: string;
+    destinationEntranceId: string;
+    contentVersion: string;
+  }): Promise<{ ticket: string; expiresAtMs: number } | undefined> {
+    for (const issuer of this.issuers) {
+      const result = await issuer.issue(input);
+      if (result) return result;
+    }
+    return undefined;
+  }
+}
+
 export class DevelopmentTransitionTicketIssuer implements TransitionTicketIssuer {
   readonly #developmentPlayTickets: DevelopmentPlayTickets;
 

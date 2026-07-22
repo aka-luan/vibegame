@@ -216,6 +216,16 @@ export interface PublicVillageState {
   monsters: PublicRoomStateMap<PublicMonsterState>;
 }
 
+/**
+ * The public forest room state shape. The forest is traversable-only for
+ * this issue (no monsters, no interactives) so it carries no `monsters`
+ * map at all — there is nothing to synchronize there yet.
+ */
+export interface PublicForestState {
+  serverTimeMs: number;
+  players: PublicRoomStateMap<PublicPlayerState>;
+}
+
 export interface CombatPublicEvent {
   kind:
     | "spawned"

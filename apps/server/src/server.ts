@@ -18,7 +18,13 @@ import {
   type PlayTicketConsumer,
 } from "./identity/play-tickets.js";
 import { PrivacySpikeRoom } from "./rooms/privacy-spike-room.js";
+import { createForestRoom } from "./rooms/forest-room.js";
 import { createVillageRoom } from "./rooms/village-room.js";
+import {
+  DevelopmentTransitionTicketIssuer,
+  FallbackTransitionTicketIssuer,
+  type TransitionTicketIssuer,
+} from "./identity/transition-tickets.js";
 import type { QuestPersistence } from "./quests/persistence.js";
 import type { RewardPersistence } from "./rewards/persistence.js";
 import type { EquipmentPersistence } from "./equipment/persistence.js";
@@ -47,6 +53,7 @@ export interface StartFoundationServerOptions {
     | undefined;
   checkpointLocation?:
     ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
+  transitionTickets?: TransitionTicketIssuer | undefined;
   logger?: boolean | undefined;
 }
 
@@ -122,6 +129,16 @@ export async function startFoundationServer(
     greet: false,
   });
   gameServer.define("privacy_spike", PrivacySpikeRoom);
+  const developmentTransitionTickets = developmentPlayTickets
+    ? new DevelopmentTransitionTicketIssuer(developmentPlayTickets)
+    : undefined;
+  const transitionTickets =
+    developmentTransitionTickets && options.transitionTickets
+      ? new FallbackTransitionTicketIssuer([
+          developmentTransitionTickets,
+          options.transitionTickets,
+        ])
+      : (options.transitionTickets ?? developmentTransitionTickets);
   if (playTickets) {
     gameServer.define(
       ROOM_NAMES.village,
@@ -160,8 +177,25 @@ export async function startFoundationServer(
         ...(options.checkpointLocation === undefined
           ? {}
           : { checkpointLocation: options.checkpointLocation }),
+        ...(transitionTickets === undefined ? {} : { transitionTickets }),
         recordLifecycle(event) {
           app.log.info({ event }, "Village connection lifecycle changed");
+        },
+      }),
+    );
+    gameServer.define(
+      ROOM_NAMES.forest,
+      createForestRoom(playTickets, {
+        ...(options.now === undefined ? {} : { now: options.now }),
+        ...(options.reconnectGraceSeconds === undefined
+          ? {}
+          : { reconnectGraceSeconds: options.reconnectGraceSeconds }),
+        ...(options.checkpointLocation === undefined
+          ? {}
+          : { checkpointLocation: options.checkpointLocation }),
+        ...(transitionTickets === undefined ? {} : { transitionTickets }),
+        recordLifecycle(event) {
+          app.log.info({ event }, "Forest connection lifecycle changed");
         },
       }),
     );
