@@ -55,6 +55,7 @@ export interface AccountRepository {
     userId: string;
     characterId: string;
     logicalDestination: string;
+    entranceId: string;
     contentVersion: string;
     nonce: string;
     now: Date;
@@ -231,6 +232,13 @@ export class GuestAccountService {
     );
   }
 
+  /**
+   * Issues a play ticket for the character's checkpointed logical location
+   * (`AccountCharacter.logicalMapId` / `.entranceId`), not a hardcoded
+   * village entrance. This is what lets a client that fails to reach a
+   * portal transition's destination ask for a fresh ticket and land back at
+   * its last safe checkpoint, wherever that is (AC4).
+   */
   async issuePlayTicket(
     session: AccountSession,
     characterId: string | undefined,
@@ -238,6 +246,11 @@ export class GuestAccountService {
     const selectedCharacterId =
       characterId ?? session.selectedCharacterId ?? undefined;
     if (!selectedCharacterId) return undefined;
+    const characters = await this.#repository.listCharacters(session.userId);
+    const character = characters.find(
+      (candidate) => candidate.id === selectedCharacterId,
+    );
+    if (!character) return undefined;
     const ticket = this.#randomBytes(32).toString("base64url");
     const nowMs = this.#now();
     const expiresAt = nowMs + PLAY_TICKET_TTL_MS;
@@ -245,7 +258,8 @@ export class GuestAccountService {
       tokenHash: hashSecret(ticket),
       userId: session.userId,
       characterId: selectedCharacterId,
-      logicalDestination: villageSlice.mapId,
+      logicalDestination: character.logicalMapId,
+      entranceId: character.entranceId,
       contentVersion: villageSlice.contentVersion,
       nonce: randomUUID(),
       now: new Date(nowMs),

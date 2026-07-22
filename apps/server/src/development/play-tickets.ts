@@ -8,7 +8,8 @@ export interface DevelopmentAdmission {
   characterId: string;
   partyId: string | undefined;
   displayName: string;
-  logicalDestination: typeof villageSlice.mapId;
+  logicalDestination: string;
+  entranceId: string;
   contentVersion: typeof villageSlice.contentVersion;
   nonce: string;
   appearance: {
@@ -28,8 +29,15 @@ export type TicketConsumption =
   | { success: true; admission: DevelopmentAdmission }
   | { success: false; code: ErrorCode };
 
+interface StoredIdentity {
+  characterId: string;
+  displayName: string;
+  appearance: DevelopmentAdmission["appearance"];
+}
+
 export class DevelopmentPlayTickets {
   readonly #tickets = new Map<string, StoredTicket>();
+  readonly #identities = new Map<string, StoredIdentity>();
   readonly #now: () => number;
   readonly #timeToLiveMs: number;
 
@@ -43,27 +51,70 @@ export class DevelopmentPlayTickets {
     options: { partyId?: string | undefined } = {},
   ): { ticket: string; expiresAt: number } {
     this.#purgeExpired();
+    const userId = `development:user:${randomUUID()}`;
+    const characterId = `development:character:${randomUUID()}`;
+    const appearance = {
+      rigId: villageSlice.rigId,
+      baseLayerId: "base",
+      armorLayerId: "tunic",
+    };
+    this.#identities.set(userId, { characterId, displayName, appearance });
     const ticket = randomBytes(32).toString("base64url");
     const expiresAt = this.#now() + this.#timeToLiveMs;
     this.#tickets.set(ticket, {
       admission: {
-        userId: `development:user:${randomUUID()}`,
-        characterId: `development:character:${randomUUID()}`,
+        userId,
+        characterId,
         partyId: options.partyId,
         displayName,
         logicalDestination: villageSlice.mapId,
+        entranceId: villageSlice.entranceId,
         contentVersion: villageSlice.contentVersion,
         nonce: randomUUID(),
-        appearance: {
-          rigId: villageSlice.rigId,
-          baseLayerId: "base",
-          armorLayerId: "tunic",
-        },
+        appearance,
       },
       expiresAt,
       consumed: false,
     });
     return { ticket, expiresAt };
+  }
+
+  /**
+   * Issues a ticket that continues an already-issued development identity
+   * (same userId/characterId/displayName/appearance) at a new destination
+   * map/entrance, for portal transitions initiated from inside a room. The
+   * identity must have been created by a prior `issue()` call.
+   */
+  issueTransition(input: {
+    userId: string;
+    characterId: string;
+    destinationMapId: string;
+    destinationEntranceId: string;
+    contentVersion: string;
+  }): { ticket: string; expiresAtMs: number } | undefined {
+    this.#purgeExpired();
+    const identity = this.#identities.get(input.userId);
+    if (!identity || identity.characterId !== input.characterId) {
+      return undefined;
+    }
+    const ticket = randomBytes(32).toString("base64url");
+    const expiresAtMs = this.#now() + this.#timeToLiveMs;
+    this.#tickets.set(ticket, {
+      admission: {
+        userId: input.userId,
+        characterId: input.characterId,
+        partyId: undefined,
+        displayName: identity.displayName,
+        logicalDestination: input.destinationMapId,
+        entranceId: input.destinationEntranceId,
+        contentVersion: input.contentVersion,
+        nonce: randomUUID(),
+        appearance: identity.appearance,
+      },
+      expiresAt: expiresAtMs,
+      consumed: false,
+    });
+    return { ticket, expiresAtMs };
   }
 
   consume(ticket: string): TicketConsumption {

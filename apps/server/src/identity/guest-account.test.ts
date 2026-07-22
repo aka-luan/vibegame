@@ -171,6 +171,7 @@ class MemoryAccountRepository implements AccountRepository {
     userId: string;
     characterId: string;
     logicalDestination: string;
+    entranceId: string;
     contentVersion: string;
     nonce: string;
     now: Date;
