@@ -14,6 +14,7 @@ import {
   type DialogueNodeMessage,
   type ErrorCode,
   type MovementIntention,
+  type MapChatMessage,
   type PublicMonsterPresence,
   type PublicPlayerPresence,
   type PublicVillageState,
@@ -188,6 +189,15 @@ const equipmentResultSchema = z.discriminatedUnion("accepted", [
     })
     .strict(),
 ]);
+const chatAvailabilitySchema = z.object({ enabled: z.boolean() }).strict();
+const mapChatMessageSchema = z
+  .object({
+    entityId: z.string().min(1),
+    displayName: z.string().min(1),
+    text: z.string().min(1),
+    serverTimeMs: z.number().finite(),
+  })
+  .strict();
 
 export interface VillagePresenceSnapshot {
   localEntityId: string;
@@ -209,6 +219,9 @@ export interface VillagePresenceSnapshot {
   equipmentResult: EquipmentResult | undefined;
   previewAppearance: PublicPlayerPresence["appearance"] | undefined;
   serverTimeOffsetMs: number;
+  chatEnabled: boolean;
+  chatMessages: readonly MapChatMessage[];
+  chatError: ErrorCode | undefined;
 }
 
 export interface VillagePresence {
@@ -226,6 +239,7 @@ export interface VillagePresence {
   interact(interactiveId: string): void;
   selectDialogueChoice(npcId: string, nodeId: string, choiceId: string): void;
   closeDialogue(): void;
+  sendChat(text: string): void;
   setSimulatedLatency(latencyMs: number): void;
   subscribe(listener: (snapshot: VillagePresenceSnapshot) => void): () => void;
   close(): Promise<void>;
@@ -275,6 +289,9 @@ export async function connectVillageWithTicket(
   let equipmentResult: EquipmentResult | undefined;
   let previewAppearance: PublicPlayerPresence["appearance"] | undefined;
   let serverTimeOffsetMs = 0;
+  let chatEnabled = false;
+  let chatMessages: MapChatMessage[] = [];
+  let chatError: ErrorCode | undefined;
   const serverClock = new ServerTimeEstimator();
 
   room.reconnection.minUptime = 0;
@@ -348,6 +365,9 @@ export async function connectVillageWithTicket(
       equipmentResult,
       previewAppearance,
       serverTimeOffsetMs,
+      chatEnabled,
+      chatMessages,
+      chatError,
     };
     afterNetworkDelay(() => {
       for (const listener of listeners) listener(snapshot);
@@ -473,6 +493,28 @@ export async function connectVillageWithTicket(
     if (result.data.accepted) previewAppearance = undefined;
     publish(room.state);
   });
+  room.onMessage<unknown>(SERVER_MESSAGES.chatAvailability, (unsafeMessage) => {
+    const message = chatAvailabilitySchema.safeParse(unsafeMessage);
+    if (!message.success) return;
+    chatEnabled = message.data.enabled;
+    publish(room.state);
+  });
+  room.onMessage<unknown>(SERVER_MESSAGES.mapChat, (unsafeMessage) => {
+    const message = mapChatMessageSchema.safeParse(unsafeMessage);
+    if (!message.success) return;
+    chatMessages = [...chatMessages.slice(-49), message.data];
+    chatError = undefined;
+    publish(room.state);
+  });
+  room.onMessage<unknown>(SERVER_MESSAGES.chatRejected, (unsafeMessage) => {
+    const rejection = z
+      .object({ code: errorCodeSchema })
+      .strict()
+      .safeParse(unsafeMessage);
+    if (!rejection.success) return;
+    chatError = rejection.data.code;
+    publish(room.state);
+  });
   room.send(CLIENT_MESSAGES.questStateRequest);
   room.send(CLIENT_MESSAGES.equipmentStateRequest);
   room.onDrop(() => {
@@ -573,6 +615,9 @@ export async function connectVillageWithTicket(
           actionId: crypto.randomUUID(),
         }),
       );
+    },
+    sendChat(text) {
+      afterNetworkDelay(() => room.send(CLIENT_MESSAGES.mapChat, { text }));
     },
     setSimulatedLatency(latencyMs) {
       simulatedLatencyMs = Math.max(0, Math.min(500, latencyMs));

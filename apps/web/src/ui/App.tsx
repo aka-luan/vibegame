@@ -67,6 +67,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   const renderer = useRef<WorldRenderer | null>(null);
   const presence = useRef<VillagePresence | null>(null);
   const unsubscribeCombat = useRef<(() => void) | undefined>(undefined);
+  const chatInput = useRef<HTMLInputElement | null>(null);
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [accountCharacters, setAccountCharacters] = useState<
@@ -85,6 +86,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   const [clockMs, setClockMs] = useState(() => Date.now());
   const [dialogueTextScale, setDialogueTextScale] = useState(1);
   const [guidanceEnabled, setGuidanceEnabled] = useState(true);
+  const [chatText, setChatText] = useState("");
   const [combatSnapshot, setCombatSnapshot] = useState<
     Pick<
       VillagePresenceSnapshot,
@@ -102,6 +104,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       | "equipmentResult"
       | "previewAppearance"
       | "serverTimeOffsetMs"
+      | "chatEnabled"
+      | "chatMessages"
+      | "chatError"
     >
   >({
     monsters: [],
@@ -118,6 +123,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     equipmentResult: undefined,
     previewAppearance: undefined,
     serverTimeOffsetMs: 0,
+    chatEnabled: false,
+    chatMessages: [],
+    chatError: undefined,
   });
 
   useEffect(() => {
@@ -166,6 +174,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
               equipmentResult: presenceSnapshot.equipmentResult,
               previewAppearance: presenceSnapshot.previewAppearance,
               serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
+              chatEnabled: presenceSnapshot.chatEnabled,
+              chatMessages: presenceSnapshot.chatMessages,
+              chatError: presenceSnapshot.chatError,
             });
           },
         );
@@ -230,6 +241,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
             equipmentResult: presenceSnapshot.equipmentResult,
             previewAppearance: presenceSnapshot.previewAppearance,
             serverTimeOffsetMs: presenceSnapshot.serverTimeOffsetMs,
+            chatEnabled: presenceSnapshot.chatEnabled,
+            chatMessages: presenceSnapshot.chatMessages,
+            chatError: presenceSnapshot.chatError,
           });
         },
       );
@@ -278,6 +292,18 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   useEffect(() => {
     if (!combatSnapshot.dialogueNode) renderer.current?.focus();
   }, [combatSnapshot.dialogueNode]);
+
+  useEffect(() => {
+    if (!combatSnapshot.chatEnabled) return;
+    const focusChat = (event: KeyboardEvent) => {
+      if (event.key !== "Enter" || combatSnapshot.dialogueNode) return;
+      if (document.activeElement === chatInput.current) return;
+      event.preventDefault();
+      chatInput.current?.focus();
+    };
+    window.addEventListener("keydown", focusChat);
+    return () => window.removeEventListener("keydown", focusChat);
+  }, [combatSnapshot.chatEnabled, combatSnapshot.dialogueNode]);
 
   const estimatedServerTimeMs = clockMs + combatSnapshot.serverTimeOffsetMs;
   const cooldownRemaining = (actionId: string): number =>
@@ -365,6 +391,51 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
         {snapshot.publicPlayerCount} players connected. Facing {snapshot.facing}
         ; {snapshot.state}. Network {snapshot.connectionStatus}.
       </p>
+      {combatSnapshot.chatEnabled ? (
+        <section aria-labelledby="chat-heading" className="chat-panel">
+          <h2 id="chat-heading">Map chat</h2>
+          <ol
+            className="chat-messages"
+            aria-live="polite"
+            aria-relevant="additions"
+          >
+            {combatSnapshot.chatMessages.map((message, index) => (
+              <li key={`${message.serverTimeMs}-${message.entityId}-${index}`}>
+                <strong>{message.displayName}:</strong>{" "}
+                <span>{message.text}</span>
+              </li>
+            ))}
+          </ol>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              presence.current?.sendChat(chatText);
+              setChatText("");
+            }}
+          >
+            <label htmlFor="map-chat-input">Message current map</label>
+            <input
+              id="map-chat-input"
+              ref={chatInput}
+              value={chatText}
+              onChange={(event) => setChatText(event.currentTarget.value)}
+              maxLength={240}
+              autoComplete="off"
+              required
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.currentTarget.blur();
+                  renderer.current?.focus();
+                }
+              }}
+            />
+            <button type="submit">Send</button>
+          </form>
+          {combatSnapshot.chatError ? (
+            <p role="alert">{combatSnapshot.chatError}</p>
+          ) : null}
+        </section>
+      ) : null}
       {snapshot.interaction ? (
         <p className="interaction-hint">E — {snapshot.interaction}</p>
       ) : null}

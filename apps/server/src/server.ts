@@ -30,6 +30,7 @@ export interface StartFoundationServerOptions {
   allowedOrigin?: string | undefined;
   readinessProbe: ReadinessProbe;
   developmentLoginEnabled?: boolean | undefined;
+  mapChatEnabled?: boolean | undefined;
   accountService?: GuestAccountService | undefined;
   playTickets?: PlayTicketConsumer | undefined;
   runtimeEnvironment?: "development" | "test" | "production" | undefined;
@@ -43,6 +44,14 @@ export interface StartFoundationServerOptions {
         operation: string;
         characterId: string;
         error: unknown;
+      }) => void)
+    | undefined;
+  recordMapChat?:
+    | ((details: {
+        outcome: "accepted" | "rejected";
+        code?: "CHAT_DISABLED" | "INVALID_CHAT_MESSAGE" | "CHAT_RATE_LIMITED";
+        utf8Bytes?: number;
+        lineCount?: number;
       }) => void)
     | undefined;
   checkpointLocation?:
@@ -87,6 +96,13 @@ export async function startFoundationServer(
     options.runtimeEnvironment !== "test"
   ) {
     throw new Error("Development login cannot be enabled in production");
+  }
+  if (
+    options.mapChatEnabled &&
+    options.runtimeEnvironment !== "development" &&
+    options.runtimeEnvironment !== "test"
+  ) {
+    throw new Error("Controlled map chat cannot be enabled in production");
   }
   const developmentPlayTickets = options.developmentLoginEnabled
     ? new DevelopmentPlayTickets(
@@ -157,6 +173,25 @@ export async function startFoundationServer(
             }),
         developmentEquipmentEnabled: options.developmentLoginEnabled === true,
         developmentQuestEnabled: options.developmentLoginEnabled === true,
+        mapChatEnabled: options.mapChatEnabled === true,
+        ...(options.recordMapChat === undefined
+          ? {
+              recordMapChat(details: {
+                outcome: "accepted" | "rejected";
+                code?:
+                  | "CHAT_DISABLED"
+                  | "INVALID_CHAT_MESSAGE"
+                  | "CHAT_RATE_LIMITED";
+                utf8Bytes?: number;
+                lineCount?: number;
+              }) {
+                app.log.info(
+                  { event: "map_chat", ...details },
+                  "Map chat message handled",
+                );
+              },
+            }
+          : { recordMapChat: options.recordMapChat }),
         ...(options.checkpointLocation === undefined
           ? {}
           : { checkpointLocation: options.checkpointLocation }),

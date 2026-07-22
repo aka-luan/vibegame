@@ -22,6 +22,7 @@ import {
   type CombatResult,
   type EquipmentResult,
   type EquipmentStateMessage,
+  type MapChatMessage,
   type MovementIntention,
   type PublicAppearance as PublicAppearanceState,
   type PublicMonsterState,
@@ -70,6 +71,10 @@ import {
   type QuestReward,
 } from "../quests/persistence.js";
 import type { QuestSnapshot } from "../quests/state.js";
+import {
+  MapChatRateLimiter,
+  validateMapChatIntention,
+} from "../chat/map-chat.js";
 
 const joinOptionsSchema = z
   .object({ ticket: z.string().min(1).max(200) })
@@ -267,6 +272,13 @@ export function createVillageRoom(
     equipmentPersistence?: EquipmentPersistence;
     developmentEquipmentEnabled?: boolean;
     developmentQuestEnabled?: boolean;
+    mapChatEnabled?: boolean;
+    recordMapChat?: (details: {
+      outcome: "accepted" | "rejected";
+      code?: "CHAT_DISABLED" | "INVALID_CHAT_MESSAGE" | "CHAT_RATE_LIMITED";
+      utf8Bytes?: number;
+      lineCount?: number;
+    }) => void;
     logEquipmentPersistenceFailure?: (details: {
       operation: string;
       characterId: string;
@@ -308,6 +320,8 @@ export function createVillageRoom(
       new InMemoryEquipmentPersistence(developmentEquipmentSeed);
     readonly #developmentEquipmentEnabled =
       options.developmentEquipmentEnabled ?? false;
+    readonly #mapChatEnabled = options.mapChatEnabled ?? false;
+    readonly #mapChatRateLimiter = new MapChatRateLimiter();
     readonly #logEquipmentPersistenceFailure =
       options.logEquipmentPersistenceFailure;
     readonly #checkpointLocation = options.checkpointLocation;
@@ -474,11 +488,76 @@ export function createVillageRoom(
       this.onMessage(CLIENT_MESSAGES.equipmentStateRequest, (client) => {
         this.#sendEquipmentState(client);
       });
+      this.onMessage(
+        CLIENT_MESSAGES.mapChat,
+        (client, unsafeIntention: unknown) => {
+          this.#handleMapChat(client, unsafeIntention);
+        },
+      );
 
       this.setSimulationInterval(
         () => this.#simulateFixedStep(),
         PLAYER_MOVEMENT.fixedStepMs,
       );
+    }
+
+    #handleMapChat(client: Client, unsafeIntention: unknown): void {
+      if (!this.#mapChatEnabled) {
+        options.recordMapChat?.({ outcome: "rejected", code: "CHAT_DISABLED" });
+        client.send(SERVER_MESSAGES.chatRejected, {
+          code: ERROR_CODES.chatDisabled,
+        });
+        return;
+      }
+      const validation = validateMapChatIntention(unsafeIntention);
+      if (!validation.accepted) {
+        options.recordMapChat?.({
+          outcome: "rejected",
+          code: "INVALID_CHAT_MESSAGE",
+          ...(validation.utf8Bytes === undefined
+            ? {}
+            : { utf8Bytes: validation.utf8Bytes }),
+          ...(validation.lineCount === undefined
+            ? {}
+            : { lineCount: validation.lineCount }),
+        });
+        client.send(SERVER_MESSAGES.chatRejected, {
+          code: ERROR_CODES.invalidChatMessage,
+        });
+        return;
+      }
+      const identity = this.#playerIdentity.get(client.sessionId);
+      const player = this.state.players.get(client.sessionId);
+      if (!identity || !player) return;
+      if (
+        !this.#mapChatRateLimiter.allow(
+          identity.characterId,
+          this.state.serverTimeMs,
+        )
+      ) {
+        options.recordMapChat?.({
+          outcome: "rejected",
+          code: "CHAT_RATE_LIMITED",
+          utf8Bytes: validation.utf8Bytes,
+          lineCount: validation.lineCount,
+        });
+        client.send(SERVER_MESSAGES.chatRejected, {
+          code: ERROR_CODES.chatRateLimited,
+        });
+        return;
+      }
+      const message: MapChatMessage = {
+        entityId: client.sessionId,
+        displayName: player.displayName,
+        text: validation.text,
+        serverTimeMs: this.state.serverTimeMs,
+      };
+      options.recordMapChat?.({
+        outcome: "accepted",
+        utf8Bytes: validation.utf8Bytes,
+        lineCount: validation.lineCount,
+      });
+      this.broadcast(SERVER_MESSAGES.mapChat, message);
     }
 
     async #handleEquipmentEquip(
@@ -1131,6 +1210,9 @@ export function createVillageRoom(
       this.#sendCombatState(client);
       this.#sendQuestState(client);
       this.#sendEquipmentState(client);
+      client.send(SERVER_MESSAGES.chatAvailability, {
+        enabled: this.#mapChatEnabled,
+      });
     }
 
     override onLeave(client: Client) {
