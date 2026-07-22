@@ -108,8 +108,15 @@ export interface PublicAppearance {
   armorLayerId: string;
 }
 
-export interface PublicPlayerPresence {
-  entityId: string;
+/**
+ * Read-only structural subset of a Colyseus `MapSchema` that consumers of
+ * public room state need: keyed iteration over synchronized values.
+ */
+export interface PublicRoomStateMap<T> {
+  forEach(callback: (value: T, key: string) => void): void;
+}
+
+export interface PublicPlayerState {
   displayName: string;
   x: number;
   y: number;
@@ -117,6 +124,10 @@ export interface PublicPlayerPresence {
   animation: "idle" | "walk";
   appearanceRevision: number;
   appearance: PublicAppearance;
+}
+
+export interface PublicPlayerPresence extends PublicPlayerState {
+  entityId: string;
 }
 
 export type EquipmentSlot = "body";
@@ -153,7 +164,6 @@ export type EquipmentResult =
       code: ErrorCode;
       state?: EquipmentStateMessage;
     };
-
 export interface TargetSelectionIntention {
   targetEntityId: string;
 }
@@ -172,13 +182,28 @@ export interface AbilityIntention {
 export type PublicMonsterAnimation =
   "idle" | "walk" | "attack" | "hit" | "defeated";
 
-export interface PublicMonsterPresence {
-  entityId: string;
+export interface PublicMonsterState {
   displayName: string;
   x: number;
   y: number;
   animation: PublicMonsterAnimation;
   healthFraction: number;
+}
+
+export interface PublicMonsterPresence extends PublicMonsterState {
+  entityId: string;
+}
+
+/**
+ * The public village room state shape: what a nearby player's client needs
+ * to render everyone in the room. Mirrors the server's Colyseus `Schema`
+ * classes structurally; the server's classes are asserted to conform to
+ * this type (see `apps/server/src/rooms/village-room.ts`).
+ */
+export interface PublicVillageState {
+  serverTimeMs: number;
+  players: PublicRoomStateMap<PublicPlayerState>;
+  monsters: PublicRoomStateMap<PublicMonsterState>;
 }
 
 export interface CombatPublicEvent {

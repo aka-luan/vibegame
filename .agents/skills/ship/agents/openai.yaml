@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ship Approved Issue"
+  short_description: "Take an approved issue to a draft PR"
+  default_prompt: "Use $ship to implement approved issue #<number> through a validated draft pull request."

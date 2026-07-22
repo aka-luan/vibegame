@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
+import { villageSlice } from "@gameish/content/slices/village";
 import { ERROR_CODES, type ErrorCode } from "@gameish/protocol";
 
 export interface DevelopmentAdmission {
@@ -7,8 +8,8 @@ export interface DevelopmentAdmission {
   characterId: string;
   partyId: string | undefined;
   displayName: string;
-  logicalDestination: "map:village";
-  contentVersion: "content:village_m1_v2";
+  logicalDestination: typeof villageSlice.mapId;
+  contentVersion: typeof villageSlice.contentVersion;
   nonce: string;
   appearance: {
     rigId: string;
@@ -50,11 +51,11 @@ export class DevelopmentPlayTickets {
         characterId: `development:character:${randomUUID()}`,
         partyId: options.partyId,
         displayName,
-        logicalDestination: "map:village",
-        contentVersion: "content:village_m1_v2",
+        logicalDestination: villageSlice.mapId,
+        contentVersion: villageSlice.contentVersion,
         nonce: randomUUID(),
         appearance: {
-          rigId: "rig:village_placeholder",
+          rigId: villageSlice.rigId,
           baseLayerId: "base",
           armorLayerId: "tunic",
         },

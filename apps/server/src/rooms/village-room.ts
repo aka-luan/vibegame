@@ -6,6 +6,7 @@ import villageCharacter from "@gameish/content/village-character";
 import villageMap from "@gameish/content/village-map-server";
 import villageDialogue from "@gameish/content/village-dialogue-server";
 import villageQuests from "@gameish/content/village-quests-server";
+import { villageSlice } from "@gameish/content/slices/village";
 import type {
   DurableCharacterState,
   DurableEquipmentSnapshot,
@@ -24,6 +25,10 @@ import {
   type EquipmentResult,
   type EquipmentStateMessage,
   type MovementIntention,
+  type PublicAppearance as PublicAppearanceState,
+  type PublicMonsterState,
+  type PublicPlayerState,
+  type PublicVillageState,
   type QuestRewardMessage,
   type QuestStateMessage,
 } from "@gameish/protocol";
@@ -195,10 +200,10 @@ class PublicPlayer extends Schema {
   y = 0;
 
   @type("string")
-  facing = "east";
+  facing: PublicPlayerState["facing"] = "east";
 
   @type("string")
-  animation = "idle";
+  animation: PublicPlayerState["animation"] = "idle";
 
   @type("number")
   appearanceRevision = 0;
@@ -218,7 +223,7 @@ class PublicMonster extends Schema {
   y = 0;
 
   @type("string")
-  animation = "idle";
+  animation: PublicMonsterState["animation"] = "idle";
 
   @type("number")
   healthFraction = 1;
@@ -234,6 +239,39 @@ class VillageState extends Schema {
   @type({ map: PublicMonster })
   monsters = new MapSchema<PublicMonster>();
 }
+
+/**
+ * Compile-time proof that the room's Colyseus schema classes conform to the
+ * public room-state contract in `@gameish/protocol`. If a field is removed
+ * or retyped on the schema classes without a matching protocol update, this
+ * fails to compile.
+ */
+type AssertConforms<T extends U, U> = T;
+
+export type PublicAppearanceConformance = AssertConforms<
+  PublicAppearance,
+  PublicAppearanceState
+>;
+export type PublicPlayerConformance = AssertConforms<
+  PublicPlayer,
+  PublicPlayerState
+>;
+export type PublicMonsterConformance = AssertConforms<
+  PublicMonster,
+  PublicMonsterState
+>;
+export type VillageStateConformance = AssertConforms<
+  VillageState,
+  PublicVillageState
+>;
+
+export type {
+  AssertConforms,
+  PublicAppearance,
+  PublicPlayer,
+  PublicMonster,
+  VillageState,
+};
 
 interface PlayerCombatState {
   targetEntityId: string | null;
@@ -292,9 +330,9 @@ export function createVillageRoom(
       options.rewardPersistence ?? new InMemoryRewardPersistence();
     readonly #questPersistence =
       options.questPersistence ??
-      new InMemoryQuestPersistence("quest:forest_mossbacks");
+      new InMemoryQuestPersistence(villageSlice.questId);
     readonly #developmentQuestPersistence = new InMemoryQuestPersistence(
-      "quest:forest_mossbacks",
+      villageSlice.questId,
     );
     readonly #developmentQuestEnabled =
       options.developmentQuestEnabled ?? false;
@@ -308,7 +346,7 @@ export function createVillageRoom(
       options.logEquipmentPersistenceFailure;
     readonly #checkpointLocation = options.checkpointLocation;
     readonly #questDefinition = villageQuests.quests.find(
-      (quest) => quest.id === "quest:forest_mossbacks",
+      (quest) => quest.id === villageSlice.questId,
     );
     readonly #playerCombat = new Map<string, PlayerCombatState>();
     readonly #playerIdentity = new Map<
@@ -356,7 +394,7 @@ export function createVillageRoom(
         throw new Error("Village boss action is unavailable");
       }
       this.#monsterLifecycle = new MonsterLifecycle({
-        entityId: "monster:village_mossback:1",
+        entityId: villageSlice.monsterEntityId,
         monster,
         encounter,
         world: { bounds: villageMap.bounds, obstacles: villageMap.collision },
@@ -1324,10 +1362,12 @@ export function createVillageRoom(
       if (!consumption.success) {
         throw new ServerError(4_223, consumption.code);
       }
-      if (consumption.admission.logicalDestination !== "map:village") {
+      if (consumption.admission.logicalDestination !== villageSlice.mapId) {
         throw new ServerError(4_224, ERROR_CODES.destinationNotAllowed);
       }
-      if (consumption.admission.contentVersion !== "content:village_m1_v2") {
+      if (
+        consumption.admission.contentVersion !== villageSlice.contentVersion
+      ) {
         throw new ServerError(4_225, ERROR_CODES.staleContentVersion);
       }
 
@@ -1353,7 +1393,7 @@ export function createVillageRoom(
       const player = new PublicPlayer();
       player.displayName = consumption.admission.displayName;
       const spawn = villageMap.spawns.find(
-        (candidate) => candidate.entranceId === "village_square",
+        (candidate) => candidate.entranceId === villageSlice.entranceId,
       );
       if (!spawn) throw new Error("Village player spawn is unavailable");
       const savedPosition = validSavedPosition(
@@ -1373,7 +1413,7 @@ export function createVillageRoom(
         consumption.admission.characterId,
       ).loadQuest(
         consumption.admission.characterId,
-        this.#questDefinition?.id ?? "quest:forest_mossbacks",
+        this.#questDefinition?.id ?? villageSlice.questId,
       );
       this.#questSnapshots.set(client.sessionId, questSnapshot);
       this.#characterDialogueState.set(client.sessionId, {
@@ -1595,14 +1635,14 @@ export function createVillageRoom(
       const player = this.state.players.get(sessionId);
       const identity = this.#playerIdentity.get(sessionId);
       const spawn = villageMap.spawns.find(
-        (candidate) => candidate.entranceId === "village_square",
+        (candidate) => candidate.entranceId === villageSlice.entranceId,
       );
       if (!player || !identity || !spawn) return;
       this.#lastCheckpointAtMs.set(sessionId, this.state.serverTimeMs);
       void this.#checkpointLocation({
         characterId: identity.characterId,
-        logicalMapId: "map:village",
-        entranceId: "village_square",
+        logicalMapId: villageSlice.mapId,
+        entranceId: villageSlice.entranceId,
         position: { x: player.x, y: player.y },
         safeSpawn: { x: spawn.x, y: spawn.y },
         connectionState,
@@ -1838,7 +1878,7 @@ function validSavedPosition(
   const location = state?.location;
   if (
     !location ||
-    location.logicalMapId !== "map:village" ||
+    location.logicalMapId !== villageSlice.mapId ||
     !villageMap.spawns.some((spawn) => spawn.entranceId === location.entranceId)
   ) {
     return undefined;

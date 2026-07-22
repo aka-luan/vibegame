@@ -16,6 +16,7 @@ import {
   type MovementIntention,
   type PublicMonsterPresence,
   type PublicPlayerPresence,
+  type PublicVillageState,
   type QuestRewardMessage,
   type QuestStateMessage,
 } from "@gameish/protocol";
@@ -188,25 +189,6 @@ const equipmentResultSchema = z.discriminatedUnion("accepted", [
     .strict(),
 ]);
 
-type SynchronizedPlayer = Omit<PublicPlayerPresence, "entityId">;
-
-interface VillageRoomState {
-  serverTimeMs: number;
-  players?: {
-    forEach(
-      callback: (player: SynchronizedPlayer, entityId: string) => void,
-    ): void;
-  };
-  monsters?: {
-    forEach(
-      callback: (
-        monster: Omit<PublicMonsterPresence, "entityId">,
-        entityId: string,
-      ) => void,
-    ): void;
-  };
-}
-
 export interface VillagePresenceSnapshot {
   localEntityId: string;
   serverTimeMs: number;
@@ -271,7 +253,7 @@ export async function connectVillageWithTicket(
   ticket: string,
   options: { simulatedLatencyMs?: number } = {},
 ): Promise<VillagePresence> {
-  const room: Room<unknown, VillageRoomState> = await new Client(
+  const room: Room<unknown, PublicVillageState> = await new Client(
     window.location.origin,
   ).joinOrCreate(ROOM_NAMES.village, { ticket });
   const listeners = new Set<(snapshot: VillagePresenceSnapshot) => void>();
@@ -315,7 +297,7 @@ export async function connectVillageWithTicket(
     pendingTimers.add(timer);
   };
 
-  const publish = (state: VillageRoomState) => {
+  const publish = (state: PublicVillageState) => {
     serverClock.observe(state.serverTimeMs, Date.now());
     serverTimeOffsetMs = serverClock.offsetMs;
     const players: PublicPlayerPresence[] = [];
