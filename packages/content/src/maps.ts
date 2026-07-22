@@ -121,6 +121,7 @@ export interface ClientMapArtifact {
     start: { x: number; y: number };
   };
   interactionHints: { id: string; label: string; x: number; y: number }[];
+  portalHints: { id: string; label: string; x: number; y: number }[];
 }
 
 export interface ServerMapArtifact {
@@ -143,6 +144,8 @@ export interface ServerMapArtifact {
     y: number;
     width: number;
     height: number;
+    label: string;
+    locked: boolean;
     destinationMapId: string;
     destinationEntranceId: string;
   }[];
@@ -476,7 +479,9 @@ export function compileTiledMap(
   ): ContentValidationIssue[] | null =>
     insideWalkableGroundRegion(object) ? null : [{ path, message }];
   for (const [index, spawn] of spawns.entries()) {
-    if (spawn.type !== "player") {
+    const requiresReachability =
+      spawn.type === "player" || spawn.type === "entrance";
+    if (!requiresReachability) {
       const regionIssues = requireInsideWalkableGroundRegion(
         spawn,
         `layers.spawns.objects[${String(index)}]`,
@@ -586,6 +591,30 @@ export function compileTiledMap(
         ],
       };
     }
+    const label = property(portal, "label");
+    if (typeof label !== "string" || label.length === 0) {
+      return {
+        success: false,
+        issues: [
+          {
+            path: `layers.portals.objects[${String(index)}].label`,
+            message: "Portal must declare a non-empty label",
+          },
+        ],
+      };
+    }
+    const locked = property(portal, "locked");
+    if (locked !== undefined && typeof locked !== "boolean") {
+      return {
+        success: false,
+        issues: [
+          {
+            path: `layers.portals.objects[${String(index)}].locked`,
+            message: "Portal locked property must be a boolean",
+          },
+        ],
+      };
+    }
   }
 
   const interactions = objectLayer("interactives").objects;
@@ -623,6 +652,11 @@ export function compileTiledMap(
       label: String(property(interactive, "label")),
       ...center(interactive),
     })),
+    portalHints: portals.map((portal) => ({
+      id: portal.name,
+      label: String(property(portal, "label")),
+      ...center(portal),
+    })),
   };
 
   const server: ServerMapArtifact = {
@@ -650,10 +684,57 @@ export function compileTiledMap(
       y: portal.y,
       width: portal.width,
       height: portal.height,
+      label: String(property(portal, "label")),
+      locked: property(portal, "locked") === true,
       destinationMapId: String(property(portal, "destination_map")),
       destinationEntranceId: String(property(portal, "destination_entrance")),
     })),
   };
 
   return { success: true, client, server };
+}
+
+/**
+ * Cross-map validation for portal destinations: the in-map entrance check in
+ * `compileTiledMap` only fires when a portal's destination map is the map
+ * currently being compiled, since a single-map compile cannot see other
+ * maps' spawns. This validates every portal's destination map is known, its
+ * destination entrance exists on that map, and both maps share the same
+ * content version (so a transition ticket bound to the source's content
+ * version stays valid on arrival).
+ */
+export function validatePortalDestinations(
+  maps: ServerMapArtifact[],
+): ContentValidationIssue[] {
+  const byId = new Map(maps.map((map) => [map.id, map]));
+  const issues: ContentValidationIssue[] = [];
+  for (const map of maps) {
+    for (const portal of map.portals) {
+      const destination = byId.get(portal.destinationMapId);
+      if (!destination) {
+        issues.push({
+          path: `${map.id}.portals.${portal.id}.destinationMapId`,
+          message: `Unknown destination map: ${portal.destinationMapId}`,
+        });
+        continue;
+      }
+      if (destination.contentVersion !== map.contentVersion) {
+        issues.push({
+          path: `${map.id}.portals.${portal.id}.destinationMapId`,
+          message: `Destination map content version mismatch: ${destination.contentVersion} !== ${map.contentVersion}`,
+        });
+      }
+      if (
+        !destination.spawns.some(
+          (spawn) => spawn.entranceId === portal.destinationEntranceId,
+        )
+      ) {
+        issues.push({
+          path: `${map.id}.portals.${portal.id}.destinationEntranceId`,
+          message: `Destination entrance does not exist: ${portal.destinationEntranceId}`,
+        });
+      }
+    }
+  }
+  return issues;
 }

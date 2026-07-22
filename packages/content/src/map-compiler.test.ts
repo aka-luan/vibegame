@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import villageMapSource from "../maps/village.tiled.json" with { type: "json" };
-import { compileTiledMap } from "./maps.js";
+import forestMapSource from "../maps/forest.tiled.json" with { type: "json" };
+import { compileTiledMap, validatePortalDestinations } from "./maps.js";
 
 type FixtureObject = {
   id: number;
@@ -183,6 +184,23 @@ describe("Tiled map compiler", () => {
         x: 300,
         y: 320,
       },
+      { entranceId: "village_gate", kind: "entrance", x: 1440, y: 320 },
+    ]);
+    expect(result.server.portals).toEqual([
+      {
+        id: "portal_forest_gate",
+        x: 1456,
+        y: 280,
+        width: 40,
+        height: 96,
+        label: "Travel to the forest",
+        locked: false,
+        destinationMapId: "map:forest",
+        destinationEntranceId: "forest_edge",
+      },
+    ]);
+    expect(result.client.portalHints).toEqual([
+      { id: "portal_forest_gate", label: "Travel to the forest", x: 1476, y: 328 },
     ]);
   });
 
@@ -598,5 +616,116 @@ describe("Tiled map compiler", () => {
 
     const result = compileVillage(input);
     expect(result.success).toBe(true);
+  });
+
+  it("rejects an entrance spawn that is not reachable navigation space", () => {
+    const input = validMap();
+    const spawns = input.layers.find((layer) => layer.name === "spawns");
+    if (!spawns || !("objects" in spawns)) throw new Error("fixture");
+    spawns.objects.push({
+      id: 30,
+      name: "back_gate",
+      type: "entrance",
+      x: 36,
+      y: 20,
+      width: 0,
+      height: 0,
+    });
+
+    expect(compileVillage(input)).toEqual({
+      success: false,
+      issues: [
+        {
+          path: "layers.spawns.objects[1]",
+          message: "Spawn must be reachable navigation space",
+        },
+      ],
+    });
+  });
+});
+
+describe("cross-map portal destination validation", () => {
+  const compileMap = (id: string, version: string, input: unknown) =>
+    compileTiledMap(id, version, input, {
+      offsetX: 0,
+      offsetY: -3,
+      width: 10,
+      height: 7,
+    });
+
+  function compiledVillageAndForest() {
+    const village = compileMap(
+      "map:village",
+      "content:village_m1_v2",
+      villageMapSource,
+    );
+    const forest = compileMap(
+      "map:forest",
+      "content:village_m1_v2",
+      forestMapSource,
+    );
+    if (!village.success || !forest.success) {
+      throw new Error("fixture maps failed to compile");
+    }
+    return { village: village.server, forest: forest.server };
+  }
+
+  it("accepts the authored village/forest portal pair", () => {
+    const { village, forest } = compiledVillageAndForest();
+    expect(validatePortalDestinations([village, forest])).toEqual([]);
+  });
+
+  it("fails when a portal points at an unknown destination map", () => {
+    const { village, forest } = compiledVillageAndForest();
+    const broken = {
+      ...village,
+      portals: village.portals.map((portal) => ({
+        ...portal,
+        destinationMapId: "map:atlantis",
+      })),
+    };
+    const issues = validatePortalDestinations([broken, forest]);
+    expect(issues).toEqual([
+      {
+        path: "map:village.portals.portal_forest_gate.destinationMapId",
+        message: "Unknown destination map: map:atlantis",
+      },
+    ]);
+  });
+
+  it("fails when a portal points at a missing destination entrance", () => {
+    const { village, forest } = compiledVillageAndForest();
+    const broken = {
+      ...village,
+      portals: village.portals.map((portal) => ({
+        ...portal,
+        destinationEntranceId: "does_not_exist",
+      })),
+    };
+    const issues = validatePortalDestinations([broken, forest]);
+    expect(issues).toEqual([
+      {
+        path: "map:village.portals.portal_forest_gate.destinationEntranceId",
+        message: "Destination entrance does not exist: does_not_exist",
+      },
+    ]);
+  });
+
+  it("fails when the destination map's content version differs", () => {
+    const { village, forest } = compiledVillageAndForest();
+    const staleForest = { ...forest, contentVersion: "content:forest_stale" };
+    const issues = validatePortalDestinations([village, staleForest]);
+    expect(issues).toEqual([
+      {
+        path: "map:village.portals.portal_forest_gate.destinationMapId",
+        message:
+          "Destination map content version mismatch: content:forest_stale !== content:village_m1_v2",
+      },
+      {
+        path: "map:forest.portals.portal_village_gate.destinationMapId",
+        message:
+          "Destination map content version mismatch: content:village_m1_v2 !== content:forest_stale",
+      },
+    ]);
   });
 });
