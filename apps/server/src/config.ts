@@ -24,6 +24,22 @@ const serverConfigSchema = z
       .enum(["true", "false"])
       .default("false")
       .transform((value) => value === "true"),
+    MAP_INSTANCE_SOFT_POPULATION_TARGET: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(10_000)
+      .default(25),
+    MAP_INSTANCE_HARD_CAPACITY: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(10_000)
+      .default(30),
+    DEVELOPMENT_INSTANCE_INSPECTION_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
   })
   .superRefine((config, context) => {
     if (config.NODE_ENV === "production" && config.DEVELOPMENT_LOGIN_ENABLED) {
@@ -41,6 +57,28 @@ const serverConfigSchema = z
         code: "custom",
         path: ["CONTROLLED_MAP_CHAT_ENABLED"],
         message: "Controlled map chat cannot be enabled in production",
+      });
+    }
+    if (
+      config.NODE_ENV === "production" &&
+      config.DEVELOPMENT_INSTANCE_INSPECTION_ENABLED
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["DEVELOPMENT_INSTANCE_INSPECTION_ENABLED"],
+        message:
+          "Development instance inspection cannot be enabled in production",
+      });
+    }
+    if (
+      config.MAP_INSTANCE_HARD_CAPACITY <
+      config.MAP_INSTANCE_SOFT_POPULATION_TARGET
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["MAP_INSTANCE_HARD_CAPACITY"],
+        message:
+          "Map instance hard capacity must be at least the soft population target",
       });
     }
   });

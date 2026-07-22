@@ -41,6 +41,10 @@ import {
   PortalCooldownRegistry,
   PortalTransitionCoordinator,
 } from "./portal-transition-handler.js";
+import {
+  DEFAULT_MAP_INSTANCE_HARD_CAPACITY,
+  type MapRoomMetadata,
+} from "./placement.js";
 import { resolveSpawnPosition } from "./spawn-resolution.js";
 import {
   InMemoryEquipmentPersistence,
@@ -271,6 +275,7 @@ export function createVillageRoom(
   options: {
     now?: () => number;
     reconnectGraceSeconds?: number;
+    hardCapacity?: number;
     combatCatalog?: CombatCatalog;
     rng?: () => number;
     rewardRng?: () => number;
@@ -309,7 +314,10 @@ export function createVillageRoom(
   // cooldown survives the transition that removes the source session.
   const portalCooldowns =
     options.portalCooldowns ?? new PortalCooldownRegistry();
-  return class VillageRoom extends Room<{ state: VillageState }> {
+  return class VillageRoom extends Room<{
+    state: VillageState;
+    metadata: MapRoomMetadata;
+  }> {
     override state = new VillageState();
     readonly #pendingIntentions = new Map<
       string,
@@ -379,6 +387,12 @@ export function createVillageRoom(
     #monsterLifecycle!: MonsterLifecycle;
 
     override onCreate() {
+      this.maxClients =
+        options.hardCapacity ?? DEFAULT_MAP_INSTANCE_HARD_CAPACITY;
+      this.metadata = {
+        logicalMapId: villageSlice.mapId,
+        instanceRole: "public",
+      };
       if (!this.#questDefinition) {
         throw new Error("Village quest definition is unavailable");
       }
@@ -1320,8 +1334,12 @@ export function createVillageRoom(
       });
     }
 
-    override onLeave(client: Client) {
-      void this.#checkpoint(client.sessionId, "offline");
+    override async onLeave(client: Client) {
+      // Colyseus waits for this lifecycle hook before disposing an empty
+      // room. Keep the final checkpoint inside that grace boundary so the
+      // placement driver cannot observe a freed seat before durable recovery
+      // state has been attempted.
+      await this.#checkpoint(client.sessionId, "offline");
       this.#removeSession(client.sessionId);
       options.recordLifecycle?.("removed");
     }

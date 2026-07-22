@@ -13,6 +13,7 @@ import type {
   SessionContext,
 } from "../identity/guest-account.js";
 import { CharacterNameTakenError } from "@gameish/database";
+import type { InstanceInspection } from "../rooms/placement.js";
 
 export interface ReadinessProbe {
   check(): Promise<void>;
@@ -21,6 +22,8 @@ export interface ReadinessProbe {
 export interface HttpAppOptions {
   readinessProbe: ReadinessProbe;
   developmentPlayTickets?: DevelopmentPlayTickets | undefined;
+  developmentInstanceInspectionEnabled?: boolean | undefined;
+  inspectInstances?: (() => InstanceInspection[]) | undefined;
   accountService?: GuestAccountService | undefined;
   allowedOrigin?: string | undefined;
   logger?: boolean | undefined;
@@ -99,6 +102,12 @@ export function createHttpApp(options: HttpAppOptions): FastifyInstance {
       }
       return reply.status(201).send(issued);
     });
+  }
+
+  if (options.developmentInstanceInspectionEnabled) {
+    app.get("/development/instances", () => ({
+      instances: options.inspectInstances?.() ?? [],
+    }));
   }
 
   if (options.accountService) {

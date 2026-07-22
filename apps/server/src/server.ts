@@ -4,7 +4,7 @@ import type {
   ServerResponse,
 } from "node:http";
 
-import { Server } from "@colyseus/core";
+import { Server, type RegisteredHandler } from "@colyseus/core";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { ROOM_NAMES } from "@gameish/protocol";
 import type { LocationCheckpointInput } from "@gameish/database";
@@ -30,6 +30,11 @@ import type { QuestPersistence } from "./quests/persistence.js";
 import type { RewardPersistence } from "./rewards/persistence.js";
 import type { EquipmentPersistence } from "./equipment/persistence.js";
 import { MapChatRateLimiter } from "./chat/map-chat.js";
+import {
+  DEFAULT_MAP_INSTANCE_HARD_CAPACITY,
+  DEFAULT_MAP_INSTANCE_SOFT_POPULATION_TARGET,
+  MapPlacementDriver,
+} from "./rooms/placement.js";
 
 export interface StartFoundationServerOptions {
   host: string;
@@ -39,11 +44,14 @@ export interface StartFoundationServerOptions {
   readinessProbe: ReadinessProbe;
   developmentLoginEnabled?: boolean | undefined;
   mapChatEnabled?: boolean | undefined;
+  developmentInstanceInspectionEnabled?: boolean | undefined;
   accountService?: GuestAccountService | undefined;
   playTickets?: PlayTicketConsumer | undefined;
   runtimeEnvironment?: "development" | "test" | "production" | undefined;
   now?: (() => number) | undefined;
   reconnectGraceSeconds?: number | undefined;
+  softPopulationTarget?: number | undefined;
+  hardCapacity?: number | undefined;
   rewardPersistence?: RewardPersistence | undefined;
   questPersistence?: QuestPersistence | undefined;
   equipmentPersistence?: EquipmentPersistence | undefined;
@@ -96,6 +104,49 @@ function installRequestDispatcher(
   );
 }
 
+function registerPlacementLifecycle(
+  handler: RegisteredHandler,
+  logicalMapId: string,
+  placementDriver: MapPlacementDriver,
+  app: FastifyInstance,
+): void {
+  handler.on("create", (room: { roomId: string }) => {
+    app.log.info(
+      {
+        event: "map_instance_created",
+        logicalMapId,
+        roomId: room.roomId,
+        overflow: placementDriver.isOverflowInstance(logicalMapId, room.roomId),
+      },
+      "Map instance created",
+    );
+  });
+  handler.on(
+    "join",
+    (room: { roomId: string; clients: { length: number } }) => {
+      app.log.info(
+        {
+          event: "map_instance_placement",
+          logicalMapId,
+          roomId: room.roomId,
+          clients: room.clients.length,
+        },
+        "Player placed in map instance",
+      );
+    },
+  );
+  handler.on("dispose", (room: { roomId: string }) => {
+    app.log.info(
+      {
+        event: "map_instance_disposed",
+        logicalMapId,
+        roomId: room.roomId,
+      },
+      "Map instance disposed after its lifecycle work",
+    );
+  });
+}
+
 export async function startFoundationServer(
   options: StartFoundationServerOptions,
 ): Promise<RunningFoundationServer> {
@@ -113,6 +164,21 @@ export async function startFoundationServer(
   ) {
     throw new Error("Controlled map chat cannot be enabled in production");
   }
+  if (
+    options.developmentInstanceInspectionEnabled &&
+    options.runtimeEnvironment !== "development" &&
+    options.runtimeEnvironment !== "test"
+  ) {
+    throw new Error(
+      "Development instance inspection cannot be enabled in production",
+    );
+  }
+  const placementDriver = new MapPlacementDriver({
+    softPopulationTarget:
+      options.softPopulationTarget ??
+      DEFAULT_MAP_INSTANCE_SOFT_POPULATION_TARGET,
+    hardCapacity: options.hardCapacity ?? DEFAULT_MAP_INSTANCE_HARD_CAPACITY,
+  });
   const developmentPlayTickets = options.developmentLoginEnabled
     ? new DevelopmentPlayTickets(
         options.now === undefined ? undefined : { now: options.now },
@@ -125,6 +191,9 @@ export async function startFoundationServer(
   const app = createHttpApp({
     readinessProbe: options.readinessProbe,
     developmentPlayTickets,
+    developmentInstanceInspectionEnabled:
+      options.developmentInstanceInspectionEnabled,
+    inspectInstances: () => placementDriver.inspectInstances(),
     accountService: options.accountService,
     allowedOrigin: options.allowedOrigin,
     logger: options.logger,
@@ -150,6 +219,7 @@ export async function startFoundationServer(
   const transport = new WebSocketTransport({ server: app.server });
   const gameServer = new Server({
     transport,
+    driver: placementDriver,
     ...(options.publicAddress === undefined
       ? {}
       : { publicAddress: options.publicAddress }),
@@ -172,9 +242,10 @@ export async function startFoundationServer(
   // follows the character across the transition, not the source session.
   const portalCooldowns = new PortalCooldownRegistry();
   if (playTickets) {
-    gameServer.define(
+    const villageHandler = gameServer.define(
       ROOM_NAMES.village,
       createVillageRoom(playTickets, {
+        hardCapacity: placementDriver.hardCapacity,
         ...(options.now === undefined ? {} : { now: options.now }),
         ...(options.reconnectGraceSeconds === undefined
           ? {}
@@ -219,9 +290,16 @@ export async function startFoundationServer(
         },
       }),
     );
-    gameServer.define(
+    registerPlacementLifecycle(
+      villageHandler,
+      "map:village",
+      placementDriver,
+      app,
+    );
+    const forestHandler = gameServer.define(
       ROOM_NAMES.forest,
       createForestRoom(playTickets, {
+        hardCapacity: placementDriver.hardCapacity,
         ...(options.now === undefined ? {} : { now: options.now }),
         ...(options.reconnectGraceSeconds === undefined
           ? {}
@@ -238,6 +316,12 @@ export async function startFoundationServer(
           app.log.info({ event }, "Forest connection lifecycle changed");
         },
       }),
+    );
+    registerPlacementLifecycle(
+      forestHandler,
+      "map:forest",
+      placementDriver,
+      app,
     );
   }
   await gameServer.listen(options.port, options.host);

@@ -55,6 +55,7 @@ export const ERROR_CODES = {
   mapLocked: "MAP_LOCKED",
   entranceNotFound: "ENTRANCE_NOT_FOUND",
   transitionUnavailable: "TRANSITION_UNAVAILABLE",
+  instanceUnavailable: "INSTANCE_UNAVAILABLE",
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
