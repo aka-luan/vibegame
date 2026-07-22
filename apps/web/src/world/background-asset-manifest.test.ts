@@ -31,9 +31,9 @@ function validManifest() {
 
 describe("background asset manifest validation", () => {
   it("accepts the canonical village background manifest", () => {
-    expect(validateBackgroundAssetManifest(villageBackgroundManifest)).toEqual(
-      { success: true },
-    );
+    expect(validateBackgroundAssetManifest(villageBackgroundManifest)).toEqual({
+      success: true,
+    });
   });
 
   it("accepts a compatible replacement that keeps dimensions and versions in sync", () => {
