@@ -25,7 +25,7 @@ test("opens a private NPC conversation with keyboard-operable scaled dialogue", 
   await page.keyboard.press("Enter");
   await expect(dialogue).toContainText("The mossbacks have wandered close");
   await expect(
-    dialogue.getByRole("button", { name: /I will look/ }),
+    dialogue.getByRole("button", { name: /Accept: Mossbacks/ }),
   ).toBeVisible();
 
   await page.keyboard.press("Escape");

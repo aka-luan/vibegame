@@ -15,7 +15,9 @@ test("completes the first quest with tracker guidance enabled and disabled", asy
   await dialogue
     .getByRole("button", { name: "What happened in the forest?" })
     .click();
-  await dialogue.getByRole("button", { name: "I will look into it." }).click();
+  await dialogue
+    .getByRole("button", { name: "Accept: Mossbacks Near the Path" })
+    .click();
   await expect(tracker).toContainText("Status: active");
   await expect(tracker).toContainText("Guidance: Forest path");
   await expect(tracker).toContainText("Marker: Mossback path");
@@ -67,7 +69,7 @@ test("completes the first quest with tracker guidance enabled and disabled", asy
     .getByRole("button", { name: "What happened in the forest?" })
     .click();
   await dialogue
-    .getByRole("button", { name: "The mossbacks are dealt with." })
+    .getByRole("button", { name: "Turn in: Mossbacks Near the Path" })
     .click();
   await expect(tracker).toContainText("Status: completed", { timeout: 5_000 });
   await expect(tracker).toContainText("Reward received");
