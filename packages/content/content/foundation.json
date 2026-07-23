@@ -401,7 +401,7 @@
             "choices": [
               {
                 "id": "ready_to_help",
-                "label": "Accept: Mossbacks Near the Path",
+                "label": "I will look into it.",
                 "nextNodeId": "farewell",
                 "condition": { "kind": "minimum_level", "level": 1 },
                 "questAction": {
@@ -416,7 +416,7 @@
               },
               {
                 "id": "report_success",
-                "label": "Turn in: Mossbacks Near the Path",
+                "label": "The mossbacks are dealt with.",
                 "nextNodeId": "farewell",
                 "condition": {
                   "kind": "quest_status",
@@ -430,7 +430,7 @@
               },
               {
                 "id": "accept_elmira_greeting",
-                "label": "Accept: A Word with Elmira",
+                "label": "I should speak with you about the path.",
                 "nextNodeId": "farewell",
                 "condition": {
                   "kind": "completed_quest",
@@ -443,7 +443,7 @@
               },
               {
                 "id": "report_elmira_greeting",
-                "label": "Turn in: A Word with Elmira",
+                "label": "I have spoken with you about the path.",
                 "nextNodeId": "farewell",
                 "condition": {
                   "kind": "quest_status",
@@ -457,7 +457,7 @@
               },
               {
                 "id": "accept_forest_path_visit",
-                "label": "Accept: Walk the Forest Path",
+                "label": "I will visit the forest path.",
                 "nextNodeId": "farewell",
                 "condition": {
                   "kind": "completed_quest",
@@ -470,7 +470,7 @@
               },
               {
                 "id": "report_forest_path_visit",
-                "label": "Turn in: Walk the Forest Path",
+                "label": "I visited the forest path.",
                 "nextNodeId": "farewell",
                 "condition": {
                   "kind": "quest_status",
@@ -484,7 +484,7 @@
               },
               {
                 "id": "accept_notice_board",
-                "label": "Accept: Read the Notice",
+                "label": "I will read the notice board.",
                 "nextNodeId": "farewell",
                 "condition": {
                   "kind": "completed_quest",
@@ -497,7 +497,7 @@
               },
               {
                 "id": "report_notice_board",
-                "label": "Turn in: Read the Notice",
+                "label": "I read the notice board.",
                 "nextNodeId": "farewell",
                 "condition": {
                   "kind": "quest_status",
@@ -511,7 +511,7 @@
               },
               {
                 "id": "accept_trail_gear",
-                "label": "Accept: Recover Trail Gear",
+                "label": "I will recover the trail gear.",
                 "nextNodeId": "farewell",
                 "condition": {
                   "kind": "completed_quest",
@@ -524,7 +524,7 @@
               },
               {
                 "id": "report_trail_gear",
-                "label": "Turn in: Recover Trail Gear",
+                "label": "I recovered the trail gear.",
                 "nextNodeId": "farewell",
                 "condition": {
                   "kind": "quest_status",
