@@ -20,7 +20,7 @@ const available = (): QuestSnapshot => ({
   revision: 0,
 });
 
-describe("quest state machine", () => {
+describe("Quest Transition Decider", () => {
   it.each([
     ["available", { kind: "accept" as const }, "active"],
     [
@@ -149,5 +149,145 @@ describe("quest state machine", () => {
       applied: false,
       reason: "illegal_transition",
     });
+  });
+
+  it.each([
+    ["kill", "monster:mossback"],
+    ["speak", "npc:elmira"],
+    ["visit", "map:forest"],
+    ["interact", "interactive:notice_board"],
+    ["collect", "item:mossback_scale"],
+  ] as const)(
+    "advances a %s objective from its stable event",
+    (kind, targetId) => {
+      const typedObjective = {
+        kind,
+        targetId,
+        requiredCount: 2,
+      } as QuestObjective;
+      const active: QuestSnapshot = {
+        ...available(),
+        status: "active",
+        revision: 1,
+      };
+      const result = transitionQuest(
+        active,
+        { objective: typedObjective },
+        {
+          kind: "objective",
+          event: { eventId: `event:${kind}:1`, kind, targetId },
+        },
+      );
+      expect(result).toMatchObject({
+        applied: true,
+        snapshot: { status: "active", progress: 1, revision: 2 },
+      });
+    },
+  );
+
+  it("requires every prerequisite to be completed before acceptance", () => {
+    const result = transitionQuest(
+      available(),
+      {
+        objective,
+        prerequisiteQuestIds: ["quest:first", "quest:second"],
+        completedPrerequisiteQuestIds: new Set(["quest:first"]),
+      },
+      { kind: "accept" },
+    );
+    expect(result).toMatchObject({
+      applied: false,
+      reason: "prerequisites_unmet",
+      snapshot: { status: "available", revision: 0 },
+    });
+  });
+
+  it("rejects invalid counts and an out-of-order event without changing the snapshot", () => {
+    const active: QuestSnapshot = {
+      ...available(),
+      status: "active",
+      revision: 1,
+    };
+    const invalid = transitionQuest(
+      active,
+      { objective },
+      {
+        kind: "objective",
+        event: {
+          eventId: "event:invalid",
+          kind: "kill",
+          targetId: objective.targetId,
+          count: 0,
+        },
+      },
+    );
+    expect(invalid).toMatchObject({ applied: false, reason: "invalid_event" });
+
+    const ready = transitionQuest(
+      active,
+      { objective },
+      {
+        kind: "objective",
+        event: {
+          eventId: "event:ready",
+          kind: "kill",
+          targetId: objective.targetId,
+        },
+      },
+    );
+    if (!ready.applied) throw new Error("expected ready objective");
+    const outOfOrder = transitionQuest(
+      ready.snapshot,
+      { objective },
+      {
+        kind: "objective",
+        event: {
+          eventId: "event:late",
+          kind: "kill",
+          targetId: objective.targetId,
+        },
+      },
+    );
+    expect(outOfOrder).toMatchObject({
+      applied: false,
+      reason: "illegal_transition",
+      snapshot: { progress: 1, revision: 2 },
+    });
+  });
+
+  it("accepts only the deterministic completion id and replays it safely", () => {
+    const ready: QuestSnapshot = {
+      ...available(),
+      status: "ready",
+      progress: 1,
+      revision: 2,
+    };
+    const context = {
+      objective,
+      completionId: "quest-completion:character:test:quest:forest_mossbacks",
+    };
+    const wrong = transitionQuest(ready, context, {
+      kind: "complete",
+      completionId: "quest-completion:wrong",
+    });
+    expect(wrong).toMatchObject({
+      applied: false,
+      reason: "invalid_completion_id",
+    });
+    const first = transitionQuest(ready, context, {
+      kind: "complete",
+      completionId: context.completionId,
+    });
+    expect(first).toMatchObject({
+      applied: true,
+      snapshot: { status: "completed", completionId: context.completionId },
+    });
+    if (!first.applied) throw new Error("expected completion");
+    expect(
+      transitionQuest(first.snapshot, context, {
+        kind: "complete",
+        completionId: context.completionId,
+      }),
+    ).toMatchObject({ applied: false, reason: "already_applied" });
   });
 });

@@ -2,6 +2,7 @@ import { Room, ServerError, type Client } from "@colyseus/core";
 import { MapSchema, Schema, type } from "@colyseus/schema";
 import forestMap from "@gameish/content/forest-map-server";
 import villageCharacter from "@gameish/content/village-character";
+import villageQuests from "@gameish/content/village-quests-server";
 import { forestSlice } from "@gameish/content/slices/forest";
 import type { LocationCheckpointInput } from "@gameish/database";
 import {
@@ -14,6 +15,7 @@ import {
   type PublicAppearance as PublicAppearanceState,
   type PublicForestState,
   type PublicPlayerState,
+  type QuestStateMessage,
   type TransitionRejectedMessage,
   type TransitionTicketMessage,
   type PartyResultMessage,
@@ -39,6 +41,7 @@ import {
   type MapRoomMetadata,
 } from "./placement.js";
 import { resolveSpawnPosition } from "./spawn-resolution.js";
+import type { QuestPersistence } from "../quests/persistence.js";
 import { PartyCoordinator } from "../party/coordinator.js";
 import { registerPartyRoomHandlers } from "../party/room-handlers.js";
 import { prepareTravelToMember } from "../party/travel-to-member.js";
@@ -126,12 +129,12 @@ export type { AssertConforms, PublicAppearance, PublicPlayer, ForestState };
 const DEFAULT_CHECKPOINT_TIMEOUT_MS = 1_000;
 
 /**
- * The forest room: traversable-only for this issue (no combat, no
- * dialogue, no quests, no monsters — see issue #13 non-goals). Movement,
- * checkpointing, and portal transitions reuse the same shared helpers as
- * the village room so that behavior exists exactly once; only the parts
- * that are irreducibly Colyseus/room-specific (state schema, onMessage
- * wiring, per-session bookkeeping) are duplicated here.
+ * The forest room remains traversable-only for combat and dialogue, but it
+ * records visit objective events privately. Movement, checkpointing, and
+ * portal transitions reuse the same shared helpers as the village room so
+ * that behavior exists exactly once; only the parts that are irreducibly
+ * Colyseus/room-specific (state schema, onMessage wiring, per-session
+ * bookkeeping) are duplicated here.
  */
 export function createForestRoom(
   playTickets: PlayTicketConsumer,
@@ -153,6 +156,7 @@ export function createForestRoom(
     ) => void;
     transitionTickets?: TransitionTicketIssuer;
     portalCooldowns?: PortalCooldownRegistry;
+    questPersistence?: QuestPersistence;
     mapChatEnabled?: boolean;
     mapChatRateLimiter?: MapChatRateLimiter;
     recordMapChat?: (details: {
@@ -201,6 +205,7 @@ export function createForestRoom(
       Math.max(1, this.#reconnectGraceSeconds * 1_000),
     );
     readonly #checkpointLocation = options.checkpointLocation;
+    readonly #questPersistence = options.questPersistence;
     readonly #mapChatEnabled = options.mapChatEnabled ?? false;
     readonly #mapChatRateLimiter =
       options.mapChatRateLimiter ?? new MapChatRateLimiter();
@@ -317,6 +322,9 @@ export function createForestRoom(
           this.#handleMapChat(client, unsafeIntention);
         },
       );
+      this.onMessage(CLIENT_MESSAGES.questStateRequest, (client) => {
+        void this.#sendVisitQuestState(client);
+      });
       registerPartyRoomHandlers({
         room: this,
         parties,
@@ -701,6 +709,7 @@ export function createForestRoom(
         characterId: consumption.admission.characterId,
         partyId: consumption.admission.partyId,
       });
+      void this.#applyVisitObjective(client);
       parties.registerPresence({
         memberId: consumption.admission.characterId,
         userId: consumption.admission.userId,
@@ -761,6 +770,80 @@ export function createForestRoom(
       if (score >= MAX_INTENTION_VIOLATIONS) {
         client.leave(4_008, ERROR_CODES.invalidMovementIntention);
       }
+    }
+
+    async #applyVisitObjective(client: Client): Promise<void> {
+      const persistence = this.#questPersistence;
+      const identity = this.#playerIdentity.get(client.sessionId);
+      const definition = villageQuests.quests.find(
+        (quest) => quest.serverOnly.objective.kind === "visit",
+      );
+      if (!persistence || !identity || !definition) return;
+      const snapshot = await persistence.loadQuest(
+        identity.characterId,
+        definition.id,
+      );
+      if (snapshot.status !== "active") return;
+      const result = await persistence.transitionQuest({
+        characterId: identity.characterId,
+        questId: definition.id,
+        objective: definition.serverOnly.objective,
+        prerequisiteQuestIds: definition.serverOnly.prerequisites,
+        transition: {
+          kind: "objective",
+          event: {
+            // Deterministic per character + target: rejoining the forest
+            // replays the same Objective Event id and dedups.
+            eventId: `quest-event:visit:${identity.characterId}:${definition.serverOnly.objective.targetId}`,
+            kind: "visit",
+            targetId: definition.serverOnly.objective.targetId,
+          },
+        },
+      });
+      if (!result.applied) return;
+      client.send(
+        SERVER_MESSAGES.questState,
+        this.#questStateMessage(definition, result.snapshot),
+      );
+    }
+
+    async #sendVisitQuestState(client: Client): Promise<void> {
+      const persistence = this.#questPersistence;
+      const identity = this.#playerIdentity.get(client.sessionId);
+      const definition = villageQuests.quests.find(
+        (quest) => quest.serverOnly.objective.kind === "visit",
+      );
+      if (!persistence || !identity || !definition) return;
+      const snapshot = await persistence.loadQuest(
+        identity.characterId,
+        definition.id,
+      );
+      client.send(
+        SERVER_MESSAGES.questState,
+        this.#questStateMessage(definition, snapshot),
+      );
+    }
+
+    #questStateMessage(
+      definition: (typeof villageQuests)["quests"][number],
+      snapshot: Awaited<ReturnType<QuestPersistence["loadQuest"]>>,
+    ): QuestStateMessage {
+      return {
+        questId: definition.id,
+        status: snapshot.status,
+        progress: snapshot.progress,
+        requiredCount: definition.serverOnly.objective.requiredCount,
+        revision: snapshot.revision,
+        objectiveKind: definition.serverOnly.objective.kind,
+        title: definition.clientVisible.title,
+        description: definition.clientVisible.description,
+        ...(definition.clientVisible.guidance === undefined
+          ? {}
+          : { guidance: definition.clientVisible.guidance }),
+        ...(definition.clientVisible.markers === undefined
+          ? {}
+          : { markers: definition.clientVisible.markers }),
+      };
     }
 
     #simulateFixedStep() {

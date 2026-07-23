@@ -18,12 +18,16 @@ test("completes the first quest with tracker guidance enabled and disabled", asy
   await dialogue.getByRole("button", { name: "I will look into it." }).click();
   await expect(tracker).toContainText("Status: active");
   await expect(tracker).toContainText("Guidance: Forest path");
+  await expect(tracker).toContainText("Marker: Mossback path");
   await page.keyboard.press("Escape");
 
   const guidance = tracker.getByLabel("Show guidance");
   await guidance.uncheck();
   await expect(tracker).not.toContainText("Guidance: Forest path");
+  await expect(tracker).not.toContainText("Marker: Mossback path");
   await guidance.check();
+  await expect(tracker).toContainText("Guidance: Forest path");
+  await guidance.uncheck();
 
   await page.getByRole("button", { name: "Return to world" }).click();
   await page.keyboard.down("KeyD");

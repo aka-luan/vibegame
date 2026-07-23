@@ -46,11 +46,77 @@
       }
     },
     {
+      "id": "map:forest",
+      "tags": ["map", "forest"],
+      "references": [],
+      "clientVisible": {
+        "displayName": "Forest path"
+      },
+      "serverOnly": {
+        "developmentOnly": false
+      }
+    },
+    {
+      "id": "interactive:notice_board",
+      "tags": ["interactive", "village"],
+      "references": [],
+      "clientVisible": {
+        "displayName": "Village notice board"
+      },
+      "serverOnly": {
+        "developmentOnly": false
+      }
+    },
+    {
       "id": "quest:forest_mossbacks",
       "tags": ["quest", "forest"],
       "references": ["npc:elmira", "monster:mossback", "item:mossback_scale"],
       "clientVisible": {
         "displayName": "Mossbacks Near the Path"
+      },
+      "serverOnly": {
+        "developmentOnly": false
+      }
+    },
+    {
+      "id": "quest:elmira_greeting",
+      "tags": ["quest", "village"],
+      "references": ["npc:elmira", "item:mossback_scale"],
+      "clientVisible": {
+        "displayName": "A Word with Elmira"
+      },
+      "serverOnly": {
+        "developmentOnly": false
+      }
+    },
+    {
+      "id": "quest:forest_path_visit",
+      "tags": ["quest", "forest"],
+      "references": ["map:forest", "item:mossback_scale"],
+      "clientVisible": {
+        "displayName": "Walk the Forest Path"
+      },
+      "serverOnly": {
+        "developmentOnly": false
+      }
+    },
+    {
+      "id": "quest:notice_board_interaction",
+      "tags": ["quest", "village"],
+      "references": ["interactive:notice_board", "item:mossback_scale"],
+      "clientVisible": {
+        "displayName": "Read the Notice"
+      },
+      "serverOnly": {
+        "developmentOnly": false
+      }
+    },
+    {
+      "id": "quest:trail_gear",
+      "tags": ["quest", "forest"],
+      "references": ["item:mossback_scale", "item:trailwarden_tunic"],
+      "clientVisible": {
+        "displayName": "Recover Trail Gear"
       },
       "serverOnly": {
         "developmentOnly": false
@@ -361,6 +427,114 @@
                   "kind": "complete_quest",
                   "questId": "quest:forest_mossbacks"
                 }
+              },
+              {
+                "id": "accept_elmira_greeting",
+                "label": "I should speak with you about the path.",
+                "nextNodeId": "farewell",
+                "condition": {
+                  "kind": "completed_quest",
+                  "questId": "quest:forest_mossbacks"
+                },
+                "questAction": {
+                  "kind": "accept_quest",
+                  "questId": "quest:elmira_greeting"
+                }
+              },
+              {
+                "id": "report_elmira_greeting",
+                "label": "I have spoken with you about the path.",
+                "nextNodeId": "farewell",
+                "condition": {
+                  "kind": "quest_status",
+                  "questId": "quest:elmira_greeting",
+                  "status": "ready"
+                },
+                "questAction": {
+                  "kind": "complete_quest",
+                  "questId": "quest:elmira_greeting"
+                }
+              },
+              {
+                "id": "accept_forest_path_visit",
+                "label": "I will visit the forest path.",
+                "nextNodeId": "farewell",
+                "condition": {
+                  "kind": "completed_quest",
+                  "questId": "quest:elmira_greeting"
+                },
+                "questAction": {
+                  "kind": "accept_quest",
+                  "questId": "quest:forest_path_visit"
+                }
+              },
+              {
+                "id": "report_forest_path_visit",
+                "label": "I visited the forest path.",
+                "nextNodeId": "farewell",
+                "condition": {
+                  "kind": "quest_status",
+                  "questId": "quest:forest_path_visit",
+                  "status": "ready"
+                },
+                "questAction": {
+                  "kind": "complete_quest",
+                  "questId": "quest:forest_path_visit"
+                }
+              },
+              {
+                "id": "accept_notice_board",
+                "label": "I will read the notice board.",
+                "nextNodeId": "farewell",
+                "condition": {
+                  "kind": "completed_quest",
+                  "questId": "quest:forest_path_visit"
+                },
+                "questAction": {
+                  "kind": "accept_quest",
+                  "questId": "quest:notice_board_interaction"
+                }
+              },
+              {
+                "id": "report_notice_board",
+                "label": "I read the notice board.",
+                "nextNodeId": "farewell",
+                "condition": {
+                  "kind": "quest_status",
+                  "questId": "quest:notice_board_interaction",
+                  "status": "ready"
+                },
+                "questAction": {
+                  "kind": "complete_quest",
+                  "questId": "quest:notice_board_interaction"
+                }
+              },
+              {
+                "id": "accept_trail_gear",
+                "label": "I will recover the trail gear.",
+                "nextNodeId": "farewell",
+                "condition": {
+                  "kind": "completed_quest",
+                  "questId": "quest:notice_board_interaction"
+                },
+                "questAction": {
+                  "kind": "accept_quest",
+                  "questId": "quest:trail_gear"
+                }
+              },
+              {
+                "id": "report_trail_gear",
+                "label": "I recovered the trail gear.",
+                "nextNodeId": "farewell",
+                "condition": {
+                  "kind": "quest_status",
+                  "questId": "quest:trail_gear",
+                  "status": "ready"
+                },
+                "questAction": {
+                  "kind": "complete_quest",
+                  "questId": "quest:trail_gear"
+                }
               }
             ]
           },
@@ -382,11 +556,19 @@
         "clientVisible": {
           "title": "Mossbacks Near the Path",
           "description": "Defeat a mossback that has wandered close to the forest path.",
+          "objectiveKind": "kill",
           "requiredCount": 1,
           "guidance": {
             "label": "Forest path",
             "targetId": "monster:mossback"
-          }
+          },
+          "markers": [
+            {
+              "id": "marker:mossback_path",
+              "label": "Mossback path",
+              "targetId": "monster:mossback"
+            }
+          ]
         },
         "serverOnly": {
           "objective": {
@@ -394,11 +576,119 @@
             "targetId": "monster:mossback",
             "requiredCount": 1
           },
+          "prerequisites": [],
           "reward": {
             "itemId": "item:mossback_scale",
             "quantity": 1,
             "experience": 100,
             "currency": 10
+          }
+        }
+      },
+      {
+        "id": "quest:elmira_greeting",
+        "clientVisible": {
+          "title": "A Word with Elmira",
+          "description": "Speak with Elmira about the forest path.",
+          "objectiveKind": "speak",
+          "requiredCount": 1
+        },
+        "serverOnly": {
+          "objective": {
+            "kind": "speak",
+            "targetId": "npc:elmira",
+            "requiredCount": 1
+          },
+          "prerequisites": ["quest:forest_mossbacks"],
+          "reward": {
+            "itemId": "item:mossback_scale",
+            "quantity": 1,
+            "experience": 25,
+            "currency": 2
+          }
+        }
+      },
+      {
+        "id": "quest:forest_path_visit",
+        "clientVisible": {
+          "title": "Walk the Forest Path",
+          "description": "Visit the forest path and learn its safe approach.",
+          "objectiveKind": "visit",
+          "requiredCount": 1,
+          "guidance": {
+            "label": "Forest entrance",
+            "targetId": "map:forest"
+          }
+        },
+        "serverOnly": {
+          "objective": {
+            "kind": "visit",
+            "targetId": "map:forest",
+            "requiredCount": 1
+          },
+          "prerequisites": ["quest:elmira_greeting"],
+          "reward": {
+            "itemId": "item:mossback_scale",
+            "quantity": 1,
+            "experience": 25,
+            "currency": 2
+          }
+        }
+      },
+      {
+        "id": "quest:notice_board_interaction",
+        "clientVisible": {
+          "title": "Read the Notice",
+          "description": "Interact with the village notice board.",
+          "objectiveKind": "interact",
+          "requiredCount": 1,
+          "markers": [
+            {
+              "id": "marker:notice_board",
+              "label": "Notice board",
+              "targetId": "interactive:notice_board"
+            }
+          ]
+        },
+        "serverOnly": {
+          "objective": {
+            "kind": "interact",
+            "targetId": "interactive:notice_board",
+            "requiredCount": 1
+          },
+          "prerequisites": ["quest:forest_path_visit"],
+          "reward": {
+            "itemId": "item:mossback_scale",
+            "quantity": 1,
+            "experience": 25,
+            "currency": 2
+          }
+        }
+      },
+      {
+        "id": "quest:trail_gear",
+        "clientVisible": {
+          "title": "Recover Trail Gear",
+          "description": "Collect trailwarden tunics recovered from mossbacks near the path.",
+          "objectiveKind": "collect",
+          "requiredCount": 2,
+          "guidance": {
+            "label": "Mossback drops",
+            "targetId": "item:trailwarden_tunic"
+          }
+        },
+        "serverOnly": {
+          "objective": {
+            "kind": "collect",
+            "targetId": "item:trailwarden_tunic",
+            "requiredCount": 2
+          },
+          "prerequisites": ["quest:notice_board_interaction"],
+          "reward": {
+            "itemId": "item:mossback_scale",
+            "quantity": 1,
+            "experience": 50,
+            "currency": 5
           }
         }
       }

@@ -75,6 +75,7 @@ import {
   InMemoryQuestPersistence,
   type QuestPersistence,
 } from "../quests/persistence.js";
+import type { ObjectiveEvent } from "../quests/state.js";
 import {
   QuestDialogueSession,
   type QuestDialogueDecision,
@@ -382,6 +383,7 @@ export function createVillageRoom(
     readonly #questDefinition = villageQuests.quests.find(
       (quest) => quest.id === villageSlice.questId,
     );
+    readonly #questDefinitions = villageQuests.quests;
     readonly #playerCombat = new Map<string, PlayerCombatState>();
     readonly #playerIdentity = new Map<
       string,
@@ -954,8 +956,32 @@ export function createVillageRoom(
       const outcome = session.interact({
         interactiveId: intention.data.interactiveId,
       });
-      if (outcome.kind === "messages")
+      if (outcome.kind === "messages") {
         this.#sendQuestDialogueMessages(client, outcome.messages);
+        const dialogueNode = outcome.messages.find(
+          (message) => message.type === "dialogueNode",
+        );
+        if (dialogueNode?.type === "dialogueNode") {
+          const characterId =
+            this.#playerIdentity.get(client.sessionId)?.characterId ?? "";
+          void this.#applyQuestObjectiveProgress(
+            characterId,
+            this.#objectiveEvent(
+              "speak",
+              characterId,
+              dialogueNode.payload.npcId,
+            ),
+          );
+          void this.#applyQuestObjectiveProgress(
+            characterId,
+            this.#objectiveEvent(
+              "interact",
+              characterId,
+              `interactive:${intention.data.interactiveId}`,
+            ),
+          );
+        }
+      }
     }
 
     // prettier-ignore
@@ -1001,9 +1027,25 @@ export function createVillageRoom(
     }
 
     // prettier-ignore
-    async #applyQuestObjectiveProgress(characterId: string, eventId: string, targetId: string): Promise<void> {
+    async #applyQuestObjectiveProgress(characterId: string, event: ObjectiveEvent): Promise<void> {
+      if (!characterId) return;
       const sessionId = [...this.#playerIdentity.entries()].find(([, identity]) => identity.characterId === characterId)?.[0]; const session = sessionId ? this.#questSessions.get(sessionId) : undefined; if (!sessionId || !session) return;
-      const decision = session.objectiveProgress({ eventId, targetId }); if (!decision) return; const client = this.clients.find((candidate) => candidate.sessionId === sessionId); await this.#persistQuestDecision(session, decision, client);
+      const decision = session.objectiveProgress(event); if (!decision) return; const client = this.clients.find((candidate) => candidate.sessionId === sessionId); await this.#persistQuestDecision(session, decision, client);
+    }
+
+    // Objective Event ids derive from character + kind + target so a re-sent
+    // client intention replays the same event and dedups instead of minting a
+    // fresh id that would advance the objective again.
+    #objectiveEvent(
+      kind: ObjectiveEvent["kind"],
+      characterId: string,
+      targetId: string,
+    ): ObjectiveEvent {
+      return {
+        eventId: `quest-event:${kind}:${characterId}:${targetId}`,
+        kind,
+        targetId,
+      };
     }
 
     // prettier-ignore
@@ -1347,17 +1389,32 @@ export function createVillageRoom(
       const definition = this.#questDefinition;
       if (!definition)
         throw new Error("Village quest definition is unavailable");
-      const questSnapshot = await this.#questsForCharacter(
+      const questPersistence = this.#questsForCharacter(
         consumption.admission.characterId,
-      ).loadQuest(consumption.admission.characterId, definition.id);
+      );
+      const questSnapshots = new Map<
+        string,
+        Awaited<ReturnType<QuestPersistence["loadQuest"]>>
+      >();
+      for (const quest of this.#questDefinitions) {
+        questSnapshots.set(
+          quest.id,
+          await questPersistence.loadQuest(
+            consumption.admission.characterId,
+            quest.id,
+          ),
+        );
+      }
       const questSession = new QuestDialogueSession({
         characterId: consumption.admission.characterId,
         character: {
           level: consumption.admission.characterState?.progression.level ?? 1,
           flags: new Set(),
         },
-        snapshot: questSnapshot,
+        snapshot: questSnapshots.get(definition.id)!,
         definition,
+        questDefinitions: this.#questDefinitions,
+        questSnapshots,
         dialogue: villageDialogue,
       });
       const classDefinition = this.#combatCatalog.classes[0];
@@ -1722,8 +1779,14 @@ export function createVillageRoom(
         combatCatalog: this.#combatCatalog, clock: () => this.state.serverTimeMs, random: this.#rewardRng,
       });
       for (const grant of settlement.grants) {
-        void this.#applyQuestObjectiveProgress(grant.characterId, grant.objectiveEventId, sourceMonsterId); if (!grant.reward) continue;
+        void this.#applyQuestObjectiveProgress(grant.characterId, grant.objectiveEvent); if (!grant.reward) continue;
         void this.#rewardPersistence.grant(grant.reward).then(() => {
+          void this.#applyQuestObjectiveProgress(grant.characterId, {
+            eventId: `${grant.reward!.grantId}:collect`,
+            kind: "collect",
+            targetId: grant.reward!.itemId,
+            count: grant.reward!.quantity,
+          });
           void this.#reloadEquipment(grant.recipientSessionId, grant.characterId, "reward_reload");
           this.clients.find((client) => client.sessionId === grant.recipientSessionId)
             ?.send(SERVER_MESSAGES.rewardSummary, { sourceMonsterId,

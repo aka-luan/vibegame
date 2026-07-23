@@ -77,7 +77,7 @@ describe("QuestDialogueSession", () => {
     ["available", ["ready_to_help", "ask_later"]],
     ["active", ["ready_to_help", "ask_later"]],
     ["ready", ["ready_to_help", "ask_later", "report_success"]],
-    ["completed", ["ready_to_help", "ask_later"]],
+    ["completed", ["ready_to_help", "ask_later", "accept_elmira_greeting"]],
   ] as const)(
     "gates dialogue choices for %s quest status",
     (status, choices) => {
@@ -269,6 +269,51 @@ describe("QuestDialogueSession", () => {
     expect(dialogue).toMatchObject({ kind: "messages" });
     const node = lastMessage(messagesOf(dialogue), "dialogueNode");
     expect(node).toMatchObject({ payload: { nodeId: "welcome" } });
+  });
+
+  it("routes a stable event to the matching quest in the bounded catalog", () => {
+    const snapshots = new Map(
+      villageQuests.quests.map((candidate, index) => [
+        candidate.id,
+        {
+          questId: candidate.id,
+          status:
+            index === 0
+              ? ("completed" as const)
+              : index === 1
+                ? ("active" as const)
+                : ("available" as const),
+          progress: index === 1 ? 0 : index === 0 ? 1 : 0,
+          appliedEventIds: [],
+          revision: index === 0 || index === 1 ? 1 : 0,
+        },
+      ]),
+    );
+    const current = new QuestDialogueSession({
+      characterId: "character:test",
+      character: { level: 1, flags: new Set() },
+      snapshot: snapshots.get(villageQuests.quests[0]!.id)!,
+      definition: villageQuests.quests[0]!,
+      questDefinitions: villageQuests.quests,
+      questSnapshots: snapshots,
+      dialogue: villageDialogue,
+    });
+
+    const progress = current.objectiveProgress({
+      eventId: "quest-event:speak:1",
+      kind: "speak",
+      targetId: "npc:elmira",
+    });
+    expect(progress).toMatchObject({
+      source: "objective",
+      request: {
+        questId: "quest:elmira_greeting",
+        transition: {
+          kind: "objective",
+          event: { kind: "speak", targetId: "npc:elmira" },
+        },
+      },
+    });
   });
 
   it("maps rejected persistence decisions to stable quest rejection reasons", () => {

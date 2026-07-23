@@ -17,7 +17,12 @@ import {
   type DialogueCharacterState,
 } from "../dialogue/resolver.js";
 import type { QuestPersistence, QuestReward } from "./persistence.js";
-import type { QuestSnapshot, QuestTransitionResult } from "./state.js";
+import {
+  questCompletionId,
+  type ObjectiveEvent,
+  type QuestSnapshot,
+  type QuestTransitionResult,
+} from "./state.js";
 
 export interface QuestDialogueCharacter {
   level: number;
@@ -73,6 +78,8 @@ export interface QuestDialogueSessionOptions {
   character: QuestDialogueCharacter;
   snapshot: QuestSnapshot;
   definition: QuestDefinition;
+  questSnapshots?: ReadonlyMap<string, QuestSnapshot>;
+  questDefinitions?: readonly QuestDefinition[];
   dialogue: DialogueCatalog;
 }
 
@@ -84,30 +91,55 @@ export interface QuestDialogueSessionOptions {
 export class QuestDialogueSession {
   readonly #characterId: string;
   readonly #character: QuestDialogueCharacter;
-  readonly #definition: QuestDefinition;
+  readonly #definitions: ReadonlyMap<string, QuestDefinition>;
   readonly #dialogue: DialogueCatalog;
-  #snapshot: QuestSnapshot;
+  readonly #snapshots = new Map<string, QuestSnapshot>();
+  #trackedQuestId: string;
   #dialogueContext: { npcId: string; nodeId: string } | undefined;
 
   constructor(options: QuestDialogueSessionOptions) {
     this.#characterId = options.characterId;
     this.#character = options.character;
-    this.#snapshot = copySnapshot(options.snapshot);
-    this.#definition = options.definition;
+    const definitions = options.questDefinitions ?? [options.definition];
+    this.#definitions = new Map(
+      definitions.map((definition) => [definition.id, definition]),
+    );
+    for (const definition of definitions) {
+      this.#snapshots.set(
+        definition.id,
+        copySnapshot(
+          options.questSnapshots?.get(definition.id) ??
+            (definition.id === options.snapshot.questId
+              ? options.snapshot
+              : availableSnapshot(definition.id)),
+        ),
+      );
+    }
+    this.#trackedQuestId =
+      this.#nextAvailableQuestId() ?? options.snapshot.questId;
     this.#dialogue = options.dialogue;
   }
 
-  questStateMessage(): QuestDialogueMessage {
+  questStateMessage(questId = this.#trackedQuestId): QuestDialogueMessage {
+    const definition = this.#definitionFor(questId);
+    const snapshot = this.#snapshotFor(questId);
     return {
       type: "questState",
       payload: {
-        questId: this.#definition.id,
-        status: this.#snapshot.status,
-        progress: this.#snapshot.progress,
-        requiredCount: this.#definition.serverOnly.objective.requiredCount,
-        title: this.#definition.clientVisible.title,
-        description: this.#definition.clientVisible.description,
-        guidance: this.#definition.clientVisible.guidance,
+        questId: definition.id,
+        status: snapshot.status,
+        progress: snapshot.progress,
+        requiredCount: definition.serverOnly.objective.requiredCount,
+        revision: snapshot.revision,
+        objectiveKind: definition.serverOnly.objective.kind,
+        title: definition.clientVisible.title,
+        description: definition.clientVisible.description,
+        ...(definition.clientVisible.guidance === undefined
+          ? {}
+          : { guidance: definition.clientVisible.guidance }),
+        ...(definition.clientVisible.markers === undefined
+          ? {}
+          : { markers: definition.clientVisible.markers }),
       },
     };
   }
@@ -204,23 +236,44 @@ export class QuestDialogueSession {
     return messages({ type: "dialogueNode", payload: continuation.node });
   }
 
-  objectiveProgress(input: {
-    eventId: string;
-    targetId: string;
-  }): ObjectiveProgressDecision | undefined {
-    if (this.#snapshot.status !== "active") return undefined;
+  objectiveProgress(
+    input:
+      ObjectiveEvent | { eventId: string; targetId: string; count?: number },
+  ): ObjectiveProgressDecision | undefined {
+    const eventKind = "kind" in input ? input.kind : undefined;
+    const definition = [...this.#definitions.values()].find((candidate) => {
+      const snapshot = this.#snapshotFor(candidate.id);
+      return (
+        snapshot.status === "active" &&
+        (eventKind === undefined ||
+          eventKind === candidate.serverOnly.objective.kind) &&
+        input.targetId === candidate.serverOnly.objective.targetId
+      );
+    });
+    if (!definition) return undefined;
+    this.#trackedQuestId = definition.id;
+    const event: ObjectiveEvent =
+      "kind" in input
+        ? input
+        : {
+            eventId: input.eventId,
+            targetId: input.targetId,
+            kind: definition.serverOnly.objective.kind,
+            ...(input.count === undefined ? {} : { count: input.count }),
+          };
     return {
       kind: "transition",
       source: "objective",
       request: {
         characterId: this.#characterId,
-        questId: this.#definition.id,
-        objective: this.#definition.serverOnly.objective,
+        questId: definition.id,
+        objective: definition.serverOnly.objective,
         transition: {
           kind: "objective",
-          eventId: input.eventId,
-          targetId: input.targetId,
+          event,
         },
+        prerequisiteQuestIds: definition.serverOnly.prerequisites,
+        completedPrerequisiteQuestIds: this.#completedQuestIds(),
       },
     };
   }
@@ -235,18 +288,28 @@ export class QuestDialogueSession {
         : [questRejected(transitionErrorCode(result.reason))];
     }
 
-    this.#snapshot = copySnapshot(result.snapshot);
+    this.#snapshots.set(
+      decision.request.questId,
+      copySnapshot(result.snapshot),
+    );
+    this.#trackedQuestId = decision.request.questId;
+    const stateMessage = this.questStateMessage();
+    if (decision.request.transition.kind === "complete") {
+      this.#trackedQuestId =
+        this.#nextAvailableQuestId() ?? decision.request.questId;
+    }
     if (decision.source === "objective") {
-      return [this.questStateMessage()];
+      return [stateMessage];
     }
 
-    const messages: QuestDialogueMessage[] = [this.questStateMessage()];
+    const messages: QuestDialogueMessage[] = [stateMessage];
     if (decision.request.transition.kind === "complete") {
+      const definition = this.#definitionFor(decision.request.questId);
       messages.push({
         type: "questReward",
         payload: {
-          questId: this.#definition.id,
-          ...this.#definition.serverOnly.reward,
+          questId: definition.id,
+          ...definition.serverOnly.reward,
         },
       });
     }
@@ -279,43 +342,94 @@ export class QuestDialogueSession {
   #transitionForAction(
     action: DialogueQuestAction,
   ): QuestTransitionRequest | undefined {
-    if (action.questId !== this.#definition.id) return undefined;
+    const definition = this.#definitions.get(action.questId);
+    if (!definition) return undefined;
     const transition =
       action.kind === "accept_quest"
         ? { kind: "accept" as const }
         : {
             kind: "complete" as const,
-            completionId: `quest-completion:${this.#characterId}:${this.#definition.id}`,
+            completionId: questCompletionId(this.#characterId, definition.id),
           };
     const reward: QuestReward | undefined =
       action.kind === "complete_quest"
-        ? this.#definition.serverOnly.reward
+        ? definition.serverOnly.reward
         : undefined;
     return {
       characterId: this.#characterId,
-      questId: this.#definition.id,
-      objective: this.#definition.serverOnly.objective,
+      questId: definition.id,
+      objective: definition.serverOnly.objective,
       transition,
+      prerequisiteQuestIds: definition.serverOnly.prerequisites,
+      completedPrerequisiteQuestIds: this.#completedQuestIds(),
       ...(reward === undefined ? {} : { reward }),
     };
   }
 
-  #dialogueCharacterState(): DialogueCharacterState {
+  #completedQuestIds(): ReadonlySet<string> {
     const completedQuestIds = new Set(this.#character.completedQuestIds ?? []);
-    if (this.#snapshot.status === "completed") {
-      completedQuestIds.add(this.#snapshot.questId);
+    for (const snapshot of this.#snapshots.values()) {
+      if (snapshot.status === "completed") {
+        completedQuestIds.add(snapshot.questId);
+      }
     }
+    return completedQuestIds;
+  }
+
+  #dialogueCharacterState(): DialogueCharacterState {
+    const completedQuestIds = this.#completedQuestIds();
     return {
       level: this.#character.level,
       flags: this.#character.flags,
       completedQuestIds,
-      questStatuses: new Map([[this.#snapshot.questId, this.#snapshot.status]]),
+      questStatuses: new Map(
+        [...this.#snapshots.values()].map((snapshot) => [
+          snapshot.questId,
+          snapshot.status,
+        ]),
+      ),
     };
+  }
+
+  #definitionFor(questId: string): QuestDefinition {
+    const definition = this.#definitions.get(questId);
+    if (!definition)
+      throw new Error(`Quest definition is unavailable: ${questId}`);
+    return definition;
+  }
+
+  #snapshotFor(questId: string): QuestSnapshot {
+    const snapshot = this.#snapshots.get(questId);
+    if (!snapshot) throw new Error(`Quest snapshot is unavailable: ${questId}`);
+    return snapshot;
+  }
+
+  #nextAvailableQuestId(): string | undefined {
+    const completed = this.#completedQuestIds();
+    return [...this.#definitions.values()].find((definition) => {
+      const snapshot = this.#snapshotFor(definition.id);
+      return (
+        snapshot.status !== "completed" &&
+        definition.serverOnly.prerequisites.every((questId) =>
+          completed.has(questId),
+        )
+      );
+    })?.id;
   }
 }
 
 function copySnapshot(snapshot: QuestSnapshot): QuestSnapshot {
   return { ...snapshot, appliedEventIds: [...snapshot.appliedEventIds] };
+}
+
+function availableSnapshot(questId: string): QuestSnapshot {
+  return {
+    questId,
+    status: "available",
+    progress: 0,
+    appliedEventIds: [],
+    revision: 0,
+  };
 }
 
 function messages(...message: QuestDialogueMessage[]): QuestDialogueDecision {
@@ -333,7 +447,14 @@ function questRejected(code: ErrorCode): QuestDialogueMessage {
 function transitionErrorCode(
   reason: Extract<QuestTransitionResult, { applied: false }>["reason"],
 ): ErrorCode {
-  return reason === "objective_mismatch"
-    ? ERROR_CODES.questObjectiveInvalid
-    : ERROR_CODES.questTransitionInvalid;
+  switch (reason) {
+    case "objective_mismatch":
+      return ERROR_CODES.questObjectiveInvalid;
+    case "invalid_event":
+      return ERROR_CODES.questObjectiveEventInvalid;
+    case "prerequisites_unmet":
+      return ERROR_CODES.questPrerequisitesUnmet;
+    default:
+      return ERROR_CODES.questTransitionInvalid;
+  }
 }

@@ -26,7 +26,10 @@ import {
   FallbackTransitionTicketIssuer,
   type TransitionTicketIssuer,
 } from "./identity/transition-tickets.js";
-import type { QuestPersistence } from "./quests/persistence.js";
+import {
+  InMemoryQuestPersistence,
+  type QuestPersistence,
+} from "./quests/persistence.js";
 import type { RewardPersistence } from "./rewards/persistence.js";
 import type { EquipmentPersistence } from "./equipment/persistence.js";
 import { MapChatRateLimiter } from "./chat/map-chat.js";
@@ -285,6 +288,9 @@ export async function startFoundationServer(
   // One registry shared by every logical-map room: the portal cooldown
   // follows the character across the transition, not the source session.
   const portalCooldowns = new PortalCooldownRegistry();
+  const questPersistence =
+    options.questPersistence ??
+    new InMemoryQuestPersistence("quest:forest_mossbacks");
   if (playTickets) {
     const villageHandler = gameServer
       .define(
@@ -298,9 +304,7 @@ export async function startFoundationServer(
           ...(options.rewardPersistence === undefined
             ? {}
             : { rewardPersistence: options.rewardPersistence }),
-          ...(options.questPersistence === undefined
-            ? {}
-            : { questPersistence: options.questPersistence }),
+          questPersistence,
           ...(options.equipmentPersistence === undefined
             ? {}
             : { equipmentPersistence: options.equipmentPersistence }),
@@ -368,6 +372,7 @@ export async function startFoundationServer(
         ROOM_NAMES.forest,
         createForestRoom(playTickets, {
           hardCapacity: placementDriver.hardCapacity,
+          questPersistence,
           ...(options.now === undefined ? {} : { now: options.now }),
           ...(options.reconnectGraceSeconds === undefined
             ? {}

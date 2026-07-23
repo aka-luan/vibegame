@@ -49,7 +49,7 @@ const dialogueNodeSchema = z.object({
   speaker: z.string().trim().min(1).max(80),
   text: z.string().trim().min(1).max(1_000),
   condition: dialogueConditionSchema.default({ kind: "always" }),
-  choices: z.array(dialogueChoiceSchema).max(4),
+  choices: z.array(dialogueChoiceSchema).max(11),
 });
 
 const dialogueNpcSchema = z.object({

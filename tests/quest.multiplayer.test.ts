@@ -91,6 +91,23 @@ async function moveAwayFromMonster(room: Room) {
   });
 }
 
+// Walks back into notice-board interaction range (center 168,312, radius 56).
+// Movement sequences must stay gap-free: the server only processes the next
+// consecutive sequence, so this continues at 33 after the 1..32 return walk.
+async function moveToNoticeBoard(room: Room) {
+  for (let sequence = 33; sequence < 273; sequence += 1) {
+    const state = JSON.parse(JSON.stringify(room.state)) as {
+      players: Record<string, { x: number; y: number }>;
+    };
+    const player = state.players[room.sessionId];
+    if (player && Math.hypot(player.x - 168, player.y - 312) <= 30) return;
+    const direction = player && player.x < 168 ? 1 : -1;
+    room.send(CLIENT_MESSAGES.movement, { x: direction, y: 0, sequence });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  }
+  throw new Error("Player did not reach the notice board");
+}
+
 async function acceptQuest(room: Room, questStates: QuestStateMessage[]) {
   const dialogueNodes: { nodeId: string }[] = [];
   room.onMessage<{ nodeId: string }>(SERVER_MESSAGES.dialogueNode, (node) =>
@@ -236,5 +253,84 @@ describe("authoritative first quest loop", () => {
     expect(firstRewards).toHaveLength(1);
     expect(firstStates.at(-1)?.status).toBe("completed");
     expect(secondRewards).toHaveLength(0);
-  });
+
+    // Private speak objective: only the speaking character progresses, and a
+    // repeated interaction replays the same Objective Event id without
+    // advancing progress or revision again.
+    await moveToNoticeBoard(first);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const nodesBeforeSpeakOpen = completionNodes.length;
+    // Retried because a loaded scheduler can delay the room's server clock
+    // past the interaction rate-limit window.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      first.send(CLIENT_MESSAGES.interaction, {
+        actionId: `speak-open-${String(attempt)}`,
+        interactiveId: "notice_board",
+      });
+      try {
+        await vi.waitFor(
+          () =>
+            expect(completionNodes.length).toBeGreaterThan(
+              nodesBeforeSpeakOpen,
+            ),
+          2_000,
+        );
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+    }
+    expect(completionNodes.length).toBeGreaterThan(nodesBeforeSpeakOpen);
+    const nodesBeforeSpeakNeed = completionNodes.length;
+    first.send(CLIENT_MESSAGES.dialogueChoice, {
+      actionId: "speak-need",
+      npcId: "npc:elmira",
+      nodeId: "welcome",
+      choiceId: "ask_need",
+    });
+    await vi.waitFor(
+      () =>
+        expect(completionNodes.length).toBeGreaterThan(nodesBeforeSpeakNeed),
+      5_000,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    first.send(CLIENT_MESSAGES.dialogueChoice, {
+      actionId: "speak-accept",
+      npcId: "npc:elmira",
+      nodeId: "forest_need",
+      choiceId: "accept_elmira_greeting",
+    });
+    await vi.waitFor(() => {
+      const latest = firstStates.at(-1);
+      expect(latest?.questId).toBe("quest:elmira_greeting");
+      expect(latest?.status).toBe("active");
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    first.send(CLIENT_MESSAGES.interaction, {
+      actionId: "speak-progress",
+      interactiveId: "notice_board",
+    });
+    await vi.waitFor(() => {
+      const latest = firstStates.at(-1);
+      expect(latest?.questId).toBe("quest:elmira_greeting");
+      expect(latest?.status).toBe("ready");
+      expect(latest?.progress).toBe(1);
+    });
+    const readyRevision = firstStates.at(-1)?.revision;
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    first.send(CLIENT_MESSAGES.interaction, {
+      actionId: "speak-repeat",
+      interactiveId: "notice_board",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(firstStates.at(-1)?.questId).toBe("quest:elmira_greeting");
+    expect(firstStates.at(-1)?.status).toBe("ready");
+    expect(firstStates.at(-1)?.progress).toBe(1);
+    expect(firstStates.at(-1)?.revision).toBe(readyRevision);
+    // The other character's private quest state never advanced past its own.
+    expect(secondStates.at(-1)?.questId).toBe("quest:forest_mossbacks");
+    expect(secondStates.at(-1)?.status).toBe("ready");
+  }, 60_000);
 });
