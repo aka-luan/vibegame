@@ -29,6 +29,7 @@ import {
   type TransitionRejectedMessage,
   type TransitionTicketMessage,
   type PartyResultMessage,
+  type MapOverviewMessage,
 } from "@gameish/protocol";
 import { moveCharacterFoot, PLAYER_MOVEMENT } from "@gameish/world";
 import { z } from "zod";
@@ -46,6 +47,8 @@ import {
   type MapRoomMetadata,
 } from "./placement.js";
 import { resolveSpawnPosition } from "./spawn-resolution.js";
+import { LOGICAL_MAP_OVERVIEW_MAPS, LOGICAL_MAPS } from "./logical-maps.js";
+import { buildMapOverview } from "./map-overview.js";
 import {
   InMemoryEquipmentPersistence,
   UnavailableEquipmentPersistence,
@@ -305,6 +308,9 @@ export function createVillageRoom(
     }) => void;
     checkpointLocation?:
       ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
+    recordArrival?:
+      | ((characterId: string, logicalMapId: string) => Promise<void>)
+      | undefined;
     checkpointTimeoutMs?: number;
     recordCheckpointTimeout?: (details: {
       logicalMapId: string;
@@ -380,6 +386,7 @@ export function createVillageRoom(
     readonly #logEquipmentPersistenceFailure =
       options.logEquipmentPersistenceFailure;
     readonly #checkpointLocation = options.checkpointLocation;
+    readonly #recordArrival = options.recordArrival;
     readonly #questDefinition = villageQuests.quests.find(
       (quest) => quest.id === villageSlice.questId,
     );
@@ -403,6 +410,7 @@ export function createVillageRoom(
     readonly #joinedAtMs = new Map<string, number>();
     readonly #lastCheckpointAtMs = new Map<string, number>();
     readonly #disconnectedSessions = new Set<string>();
+    readonly #discoveredMapIds = new Map<string, Set<string>>();
     readonly #partyDepartures = new Set<string>();
     readonly #participationWindow = new RewardSettlementWindow();
     #defeatSequence = 0;
@@ -593,6 +601,9 @@ export function createVillageRoom(
       );
       this.onMessage(CLIENT_MESSAGES.equipmentStateRequest, (client) => {
         this.#sendEquipmentState(client);
+      });
+      this.onMessage(CLIENT_MESSAGES.mapOverviewRequest, (client) => {
+        this.#sendMapOverview(client);
       });
       this.onMessage(
         CLIENT_MESSAGES.mapChat,
@@ -1054,6 +1065,36 @@ export function createVillageRoom(
     // prettier-ignore
     #sendQuestDialogueMessages(client: Client, messages: QuestDialogueMessage[]): void { for (const message of messages) { client.send(SERVER_MESSAGES[message.type], message.payload); if (message.type !== "questReward") continue; const characterId = this.#playerIdentity.get(client.sessionId)?.characterId; if (characterId) void this.#reloadEquipment(client.sessionId, characterId, "quest_completion_reload"); } }
 
+    #sendMapOverview(client: Client): void {
+      const identity = this.#playerIdentity.get(client.sessionId);
+      if (!identity) return;
+      const questMessage = this.#questSessions
+        .get(client.sessionId)
+        ?.questStateMessage();
+      const questGuidance =
+        questMessage?.type === "questState" &&
+        questMessage.payload.status === "active" &&
+        questMessage.payload.guidance
+          ? {
+              logicalMapId: questMessage.payload.guidance.targetId,
+              label: questMessage.payload.guidance.label,
+            }
+          : undefined;
+      client.send(
+        SERVER_MESSAGES.mapOverview,
+        buildMapOverview({
+          logicalMaps: LOGICAL_MAP_OVERVIEW_MAPS,
+          isAccessible: (logicalMapId) =>
+            options.canAccessMap?.(identity.characterId, logicalMapId) ??
+            Boolean(LOGICAL_MAPS[logicalMapId]),
+          discoveredMapIds:
+            this.#discoveredMapIds.get(client.sessionId) ?? new Set(),
+          currentMapId: villageSlice.mapId,
+          ...(questGuidance === undefined ? {} : { questGuidance }),
+        }) satisfies MapOverviewMessage,
+      );
+    }
+
     #combatActionState(client: Client): CombatActionState {
       return {
         nowMs: this.state.serverTimeMs,
@@ -1334,6 +1375,7 @@ export function createVillageRoom(
       this.#joinedAtMs.delete(sessionId);
       this.#lastCheckpointAtMs.delete(sessionId);
       this.#disconnectedSessions.delete(sessionId);
+      this.#discoveredMapIds.delete(sessionId);
       this.#sessionEntranceId.delete(sessionId);
       this.#portalTransitions.clearSession(sessionId);
       this.state.players.delete(sessionId);
@@ -1457,6 +1499,24 @@ export function createVillageRoom(
         characterId: consumption.admission.characterId,
         partyId: consumption.admission.partyId,
       });
+      const discoveredMapIds = new Set(
+        consumption.admission.characterState?.discoveries ?? [],
+      );
+      discoveredMapIds.add(villageSlice.mapId);
+      this.#discoveredMapIds.set(client.sessionId, discoveredMapIds);
+      if (
+        this.#recordArrival &&
+        !consumption.admission.characterId.startsWith("development:")
+      ) {
+        try {
+          await this.#recordArrival(
+            consumption.admission.characterId,
+            villageSlice.mapId,
+          );
+        } catch {
+          throw new ServerError(4_229, ERROR_CODES.databaseUnavailable);
+        }
+      }
       parties.registerPresence({
         memberId: consumption.admission.characterId,
         userId: consumption.admission.userId,
@@ -1487,6 +1547,7 @@ export function createVillageRoom(
       this.#sendCombatState(client);
       this.#sendQuestState(client);
       this.#sendEquipmentState(client);
+      this.#sendMapOverview(client);
       client.send(SERVER_MESSAGES.chatAvailability, {
         enabled: this.#mapChatEnabled,
       });

@@ -1,5 +1,6 @@
 import forestMap from "@gameish/content/forest-map-server";
 import villageMap from "@gameish/content/village-map-server";
+import { LOGICAL_MAP_DIRECTORY } from "@gameish/content";
 import { forestSlice } from "@gameish/content/slices/forest";
 import { villageSlice } from "@gameish/content/slices/village";
 import type { ServerMapArtifact } from "@gameish/content";
@@ -15,6 +16,39 @@ export const LOGICAL_MAPS: Readonly<Record<string, ServerMapArtifact>> = {
   [villageMap.id]: villageMap,
   [forestMap.id]: forestMap,
 };
+
+/**
+ * Server-side source for the map overview. It is deliberately projected from
+ * the client-safe directory and portal labels, so hidden maps and portal
+ * geometry cannot enter a map overview by accident.
+ */
+export const LOGICAL_MAP_OVERVIEW_MAPS = Object.freeze(
+  LOGICAL_MAP_DIRECTORY.reduce<
+    Record<
+      string,
+      {
+        displayName: string;
+        portals: {
+          destinationMapId: string;
+          label: string;
+          locked: boolean;
+        }[];
+      }
+    >
+  >((catalog, { logicalMapId, displayName }) => {
+    const map = LOGICAL_MAPS[logicalMapId];
+    if (!map) return catalog;
+    catalog[logicalMapId] = {
+      displayName,
+      portals: map.portals.map(({ destinationMapId, label, locked }) => ({
+        destinationMapId,
+        label,
+        locked,
+      })),
+    };
+    return catalog;
+  }, {}),
+);
 
 const ROOM_NAME_BY_MAP_ID: Readonly<Record<string, string>> = {
   [villageMap.id]: ROOM_NAMES.village,

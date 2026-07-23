@@ -45,6 +45,9 @@ const server = await startFoundationServer({
   rewardPersistence,
   equipmentPersistence,
   checkpointLocation: (input) => durableState.checkpointLocation(input),
+  recordArrival: async (characterId, logicalMapId) => {
+    await durableState.recordDiscovery(characterId, logicalMapId);
+  },
   developmentLoginEnabled: config.DEVELOPMENT_LOGIN_ENABLED,
   developmentInstanceInspectionEnabled:
     config.DEVELOPMENT_INSTANCE_INSPECTION_ENABLED,

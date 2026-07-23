@@ -7,6 +7,7 @@ import type {
 import { Server, type RegisteredHandler } from "@colyseus/core";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { ROOM_NAMES } from "@gameish/protocol";
+import { villageSlice } from "@gameish/content/slices/village";
 import type { LocationCheckpointInput } from "@gameish/database";
 import type { FastifyInstance } from "fastify";
 
@@ -39,7 +40,10 @@ import {
   MapPlacementDriver,
 } from "./rooms/placement.js";
 import { PartyCoordinator } from "./party/coordinator.js";
-import { isLogicalMapAccessible } from "./rooms/logical-maps.js";
+import {
+  defaultEntranceId,
+  isLogicalMapAccessible,
+} from "./rooms/logical-maps.js";
 
 export interface StartFoundationServerOptions {
   host: string;
@@ -78,6 +82,8 @@ export interface StartFoundationServerOptions {
     | undefined;
   checkpointLocation?:
     ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
+  recordArrival?:
+    ((characterId: string, logicalMapId: string) => Promise<void>) | undefined;
   recordCheckpointTimeout?:
     | ((details: {
         logicalMapId: string;
@@ -240,6 +246,38 @@ export async function startFoundationServer(
     allowedOrigin: options.allowedOrigin,
     logger: options.logger,
   });
+  options.accountService?.configureTicketDestinationPolicy(
+    (requestedMapId) => {
+      const logicalMapId = isLogicalMapAccessible(requestedMapId)
+        ? requestedMapId
+        : villageSlice.mapId;
+      const entranceId = defaultEntranceId(logicalMapId);
+      if (!entranceId) {
+        return {
+          logicalMapId: villageSlice.mapId,
+          entranceId: defaultEntranceId(villageSlice.mapId)!,
+          fellBack: true,
+        };
+      }
+      return {
+        logicalMapId,
+        entranceId,
+        fellBack: logicalMapId !== requestedMapId,
+      };
+    },
+    (details) => {
+      app.log.warn(
+        {
+          event: "logical_location_fallback",
+          code: details.code,
+          actionId: details.actionId,
+          requestedMapId: details.requestedMapId,
+          fallbackMapId: details.fallbackMapId,
+        },
+        "Saved logical location was not accessible; using the village",
+      );
+    },
+  );
   await app.ready();
   const recordMapChat: NonNullable<
     StartFoundationServerOptions["recordMapChat"]
@@ -332,6 +370,9 @@ export async function startFoundationServer(
           ...(options.checkpointLocation === undefined
             ? {}
             : { checkpointLocation: options.checkpointLocation }),
+          ...(options.recordArrival === undefined
+            ? {}
+            : { recordArrival: options.recordArrival }),
           ...(options.checkpointTimeoutMs === undefined
             ? {}
             : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
@@ -380,6 +421,9 @@ export async function startFoundationServer(
           ...(options.checkpointLocation === undefined
             ? {}
             : { checkpointLocation: options.checkpointLocation }),
+          ...(options.recordArrival === undefined
+            ? {}
+            : { recordArrival: options.recordArrival }),
           ...(options.checkpointTimeoutMs === undefined
             ? {}
             : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
