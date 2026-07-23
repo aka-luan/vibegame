@@ -21,6 +21,9 @@ import {
   type PublicPlayerPresence,
   type PublicPlayerState,
   type PublicRoomStateMap,
+  type PartyInvitationMessage,
+  type PartyResultMessage,
+  type PartyStateMessage,
   type QuestRewardMessage,
   type QuestStateMessage,
 } from "@gameish/protocol";
@@ -221,6 +224,40 @@ const transitionRejectedSchema = z
     code: errorCodeSchema,
   })
   .strict();
+const partyMemberSchema = z
+  .object({
+    entityId: z.string().min(1).max(80),
+    displayName: z.string().min(1).max(40),
+    logicalMapId: z.string().min(1).max(80),
+    leader: z.boolean(),
+    connected: z.boolean(),
+  })
+  .strict();
+const partyStateSchema = z
+  .object({ members: z.array(partyMemberSchema).max(4) })
+  .strict();
+const partyInvitationSchema = z
+  .object({
+    invitationId: z.string().min(1).max(80),
+    inviter: z
+      .object({
+        entityId: z.string().min(1).max(80),
+        displayName: z.string().min(1).max(40),
+        logicalMapId: z.string().min(1).max(80),
+      })
+      .strict(),
+  })
+  .strict();
+const partyResultSchema = z.discriminatedUnion("accepted", [
+  z.object({ accepted: z.literal(true), actionId: z.string() }).strict(),
+  z
+    .object({
+      accepted: z.literal(false),
+      actionId: z.string(),
+      code: errorCodeSchema,
+    })
+    .strict(),
+]);
 
 /**
  * Every room a client can join publishes at least this shape.
@@ -289,6 +326,9 @@ export interface VillagePresenceSnapshot {
   /** The stable error code from the most recent rejected or failed
    * transition, if any. */
   lastTransitionErrorCode: ErrorCode | undefined;
+  partyState: PartyStateMessage;
+  partyInvitation: PartyInvitationMessage | undefined;
+  partyResult: PartyResultMessage | undefined;
 }
 
 export interface VillagePresence {
@@ -307,7 +347,13 @@ export interface VillagePresence {
   selectDialogueChoice(npcId: string, nodeId: string, choiceId: string): void;
   closeDialogue(): void;
   sendChat(text: string): void;
-  requestPortalTransition(portalId: string): void;
+  requestPortalTransition(portalId: string, travelAlone?: boolean): void;
+  inviteToParty(targetEntityId: string): void;
+  acceptPartyInvitation(invitationId: string): void;
+  declinePartyInvitation(invitationId: string): void;
+  leaveParty(): void;
+  changePartyLeader(targetEntityId: string): void;
+  travelToPartyMember(targetEntityId: string): void;
   setSimulatedLatency(latencyMs: number): void;
   subscribe(listener: (snapshot: VillagePresenceSnapshot) => void): () => void;
   close(): Promise<void>;
@@ -470,6 +516,10 @@ async function connectVillage(
   let chatError: ErrorCode | undefined;
   let transitionStatus: VillagePresenceSnapshot["transitionStatus"] = "idle";
   let lastTransitionErrorCode: ErrorCode | undefined;
+  let partyState: PartyStateMessage = { members: [] };
+  let partyInvitation: PartyInvitationMessage | undefined;
+  let pendingInvitationActionId: string | undefined;
+  let partyResult: PartyResultMessage | undefined;
   const serverClock = new ServerTimeEstimator();
 
   const afterNetworkDelay = (callback: () => void) => {
@@ -555,6 +605,9 @@ async function connectVillage(
       activePortalPrompt,
       transitionStatus,
       lastTransitionErrorCode,
+      partyState,
+      partyInvitation,
+      partyResult,
     };
     afterNetworkDelay(() => {
       // Transitions add and remove subscribers while snapshots are in
@@ -746,6 +799,33 @@ async function connectVillage(
       chatError = rejection.data.code;
       publish(room.state);
     });
+    room.onMessage<unknown>(SERVER_MESSAGES.partyState, (unsafeMessage) => {
+      const state = partyStateSchema.safeParse(unsafeMessage);
+      if (!state.success) return;
+      partyState = state.data;
+      publish(room.state);
+    });
+    room.onMessage<unknown>(
+      SERVER_MESSAGES.partyInvitation,
+      (unsafeMessage) => {
+        const invitation = partyInvitationSchema.safeParse(unsafeMessage);
+        if (!invitation.success) return;
+        partyInvitation = invitation.data;
+        publish(room.state);
+      },
+    );
+    room.onMessage<unknown>(SERVER_MESSAGES.partyResult, (unsafeMessage) => {
+      const result = partyResultSchema.safeParse(unsafeMessage);
+      if (!result.success) return;
+      partyResult = result.data;
+      if (result.data.actionId === pendingInvitationActionId) {
+        if (result.data.accepted) partyInvitation = undefined;
+        pendingInvitationActionId = undefined;
+      }
+      if (!result.data.accepted) transitionStatus = "idle";
+      publish(room.state);
+    });
+    room.send(CLIENT_MESSAGES.partyStateRequest);
     // Only the village room implements quests and equipment (forest is
     // traversable-only per issue #13's non-goals); sending these on the
     // forest room would hit an unregistered message handler server-side and
@@ -956,13 +1036,55 @@ async function connectVillage(
     sendChat(text) {
       afterNetworkDelay(() => room.send(CLIENT_MESSAGES.mapChat, { text }));
     },
-    requestPortalTransition(portalId) {
+    requestPortalTransition(portalId, travelAlone = false) {
       afterNetworkDelay(() =>
         room.send(CLIENT_MESSAGES.portalTransition, {
           actionId: crypto.randomUUID(),
           portalId,
+          ...(travelAlone ? { travelMode: "alone" as const } : {}),
         }),
       );
+    },
+    inviteToParty(targetEntityId) {
+      room.send(CLIENT_MESSAGES.partyInvite, {
+        actionId: crypto.randomUUID(),
+        targetEntityId,
+      });
+    },
+    acceptPartyInvitation(invitationId) {
+      const actionId = crypto.randomUUID();
+      pendingInvitationActionId = actionId;
+      room.send(CLIENT_MESSAGES.partyAccept, {
+        actionId,
+        invitationId,
+      });
+    },
+    declinePartyInvitation(invitationId) {
+      const actionId = crypto.randomUUID();
+      pendingInvitationActionId = actionId;
+      room.send(CLIENT_MESSAGES.partyDecline, {
+        actionId,
+        invitationId,
+      });
+    },
+    leaveParty() {
+      room.send(CLIENT_MESSAGES.partyLeave, {
+        actionId: crypto.randomUUID(),
+      });
+    },
+    changePartyLeader(targetEntityId) {
+      room.send(CLIENT_MESSAGES.partyChangeLeader, {
+        actionId: crypto.randomUUID(),
+        targetEntityId,
+      });
+    },
+    travelToPartyMember(targetEntityId) {
+      transitionStatus = "pending";
+      publish(room.state);
+      room.send(CLIENT_MESSAGES.partyTravelToMember, {
+        actionId: crypto.randomUUID(),
+        targetEntityId,
+      });
     },
     setSimulatedLatency(latencyMs) {
       simulatedLatencyMs = Math.max(0, Math.min(500, latencyMs));

@@ -35,6 +35,8 @@ import {
   DEFAULT_MAP_INSTANCE_SOFT_POPULATION_TARGET,
   MapPlacementDriver,
 } from "./rooms/placement.js";
+import { PartyCoordinator } from "./party/coordinator.js";
+import { isLogicalMapAccessible } from "./rooms/logical-maps.js";
 
 export interface StartFoundationServerOptions {
   host: string;
@@ -82,6 +84,8 @@ export interface StartFoundationServerOptions {
       }) => void)
     | undefined;
   transitionTickets?: TransitionTicketIssuer | undefined;
+  canAccessMap?:
+    ((characterId: string, logicalMapId: string) => boolean) | undefined;
   logger?: boolean | undefined;
 }
 
@@ -205,12 +209,15 @@ export async function startFoundationServer(
       "Development instance inspection cannot be enabled in production",
     );
   }
-  const placementDriver = new MapPlacementDriver({
-    softPopulationTarget:
-      options.softPopulationTarget ??
-      DEFAULT_MAP_INSTANCE_SOFT_POPULATION_TARGET,
-    hardCapacity: options.hardCapacity ?? DEFAULT_MAP_INSTANCE_HARD_CAPACITY,
-  });
+  const placementDriver = new MapPlacementDriver(
+    {
+      softPopulationTarget:
+        options.softPopulationTarget ??
+        DEFAULT_MAP_INSTANCE_SOFT_POPULATION_TARGET,
+      hardCapacity: options.hardCapacity ?? DEFAULT_MAP_INSTANCE_HARD_CAPACITY,
+    },
+    options.now === undefined ? undefined : { now: options.now },
+  );
   const developmentPlayTickets = options.developmentLoginEnabled
     ? new DevelopmentPlayTickets(
         options.now === undefined ? undefined : { now: options.now },
@@ -259,6 +266,11 @@ export async function startFoundationServer(
     greet: false,
   });
   const mapChatRateLimiter = new MapChatRateLimiter();
+  const parties = new PartyCoordinator();
+  const canAccessMap =
+    options.canAccessMap ??
+    ((_characterId: string, logicalMapId: string) =>
+      isLogicalMapAccessible(logicalMapId));
   gameServer.define("privacy_spike", PrivacySpikeRoom);
   const developmentTransitionTickets = developmentPlayTickets
     ? new DevelopmentTransitionTicketIssuer(developmentPlayTickets)
@@ -274,102 +286,132 @@ export async function startFoundationServer(
   // follows the character across the transition, not the source session.
   const portalCooldowns = new PortalCooldownRegistry();
   if (playTickets) {
-    const villageHandler = gameServer.define(
-      ROOM_NAMES.village,
-      createVillageRoom(playTickets, {
-        hardCapacity: placementDriver.hardCapacity,
-        ...(options.now === undefined ? {} : { now: options.now }),
-        ...(options.reconnectGraceSeconds === undefined
-          ? {}
-          : { reconnectGraceSeconds: options.reconnectGraceSeconds }),
-        ...(options.rewardPersistence === undefined
-          ? {}
-          : { rewardPersistence: options.rewardPersistence }),
-        ...(options.questPersistence === undefined
-          ? {}
-          : { questPersistence: options.questPersistence }),
-        ...(options.equipmentPersistence === undefined
-          ? {}
-          : { equipmentPersistence: options.equipmentPersistence }),
-        ...(options.logEquipmentPersistenceFailure === undefined
-          ? {
-              logEquipmentPersistenceFailure(details) {
-                app.log.error(
-                  {
-                    event: "equipment_persistence_failure",
-                    ...details,
-                  },
-                  "Equipment persistence operation failed",
-                );
-              },
+    const villageHandler = gameServer
+      .define(
+        ROOM_NAMES.village,
+        createVillageRoom(playTickets, {
+          hardCapacity: placementDriver.hardCapacity,
+          ...(options.now === undefined ? {} : { now: options.now }),
+          ...(options.reconnectGraceSeconds === undefined
+            ? {}
+            : { reconnectGraceSeconds: options.reconnectGraceSeconds }),
+          ...(options.rewardPersistence === undefined
+            ? {}
+            : { rewardPersistence: options.rewardPersistence }),
+          ...(options.questPersistence === undefined
+            ? {}
+            : { questPersistence: options.questPersistence }),
+          ...(options.equipmentPersistence === undefined
+            ? {}
+            : { equipmentPersistence: options.equipmentPersistence }),
+          ...(options.logEquipmentPersistenceFailure === undefined
+            ? {
+                logEquipmentPersistenceFailure(details) {
+                  app.log.error(
+                    {
+                      event: "equipment_persistence_failure",
+                      ...details,
+                    },
+                    "Equipment persistence operation failed",
+                  );
+                },
+              }
+            : {
+                logEquipmentPersistenceFailure:
+                  options.logEquipmentPersistenceFailure,
+              }),
+          developmentEquipmentEnabled: options.developmentLoginEnabled === true,
+          developmentQuestEnabled: options.developmentLoginEnabled === true,
+          mapChatEnabled: options.mapChatEnabled === true,
+          mapChatRateLimiter,
+          recordMapChat,
+          ...(options.checkpointLocation === undefined
+            ? {}
+            : { checkpointLocation: options.checkpointLocation }),
+          ...(options.checkpointTimeoutMs === undefined
+            ? {}
+            : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
+          recordCheckpointTimeout(details) {
+            if (options.recordCheckpointTimeout) {
+              options.recordCheckpointTimeout(details);
+              return;
             }
-          : {
-              logEquipmentPersistenceFailure:
-                options.logEquipmentPersistenceFailure,
-            }),
-        developmentEquipmentEnabled: options.developmentLoginEnabled === true,
-        developmentQuestEnabled: options.developmentLoginEnabled === true,
-        mapChatEnabled: options.mapChatEnabled === true,
-        mapChatRateLimiter,
-        recordMapChat,
-        ...(options.checkpointLocation === undefined
-          ? {}
-          : { checkpointLocation: options.checkpointLocation }),
-        ...(options.checkpointTimeoutMs === undefined
-          ? {}
-          : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
-        recordCheckpointTimeout(details) {
-          if (options.recordCheckpointTimeout) {
-            options.recordCheckpointTimeout(details);
-            return;
-          }
-          app.log.warn(
-            { event: "map_checkpoint_timeout", ...details },
-            "Map checkpoint exceeded its lifecycle timeout",
-          );
-        },
-        ...(transitionTickets === undefined ? {} : { transitionTickets }),
-        portalCooldowns,
-        recordLifecycle(event) {
-          app.log.info({ event }, "Village connection lifecycle changed");
-        },
-      }),
-    );
+            app.log.warn(
+              { event: "map_checkpoint_timeout", ...details },
+              "Map checkpoint exceeded its lifecycle timeout",
+            );
+          },
+          ...(transitionTickets === undefined ? {} : { transitionTickets }),
+          portalCooldowns,
+          parties,
+          placement: placementDriver,
+          canAccessMap,
+          recordPartyTravelFailure(actionId) {
+            app.log.error(
+              {
+                event: "party_travel_failure",
+                actionId,
+                logicalMapId: "map:village",
+              },
+              "Party travel failed unexpectedly",
+            );
+          },
+          recordLifecycle(event) {
+            app.log.info({ event }, "Village connection lifecycle changed");
+          },
+        }),
+      )
+      .filterBy(["partyReservationId"]);
     registerPlacementLifecycle(villageHandler, "map:village", app);
-    const forestHandler = gameServer.define(
-      ROOM_NAMES.forest,
-      createForestRoom(playTickets, {
-        hardCapacity: placementDriver.hardCapacity,
-        ...(options.now === undefined ? {} : { now: options.now }),
-        ...(options.reconnectGraceSeconds === undefined
-          ? {}
-          : { reconnectGraceSeconds: options.reconnectGraceSeconds }),
-        ...(options.checkpointLocation === undefined
-          ? {}
-          : { checkpointLocation: options.checkpointLocation }),
-        ...(options.checkpointTimeoutMs === undefined
-          ? {}
-          : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
-        recordCheckpointTimeout(details) {
-          if (options.recordCheckpointTimeout) {
-            options.recordCheckpointTimeout(details);
-            return;
-          }
-          app.log.warn(
-            { event: "map_checkpoint_timeout", ...details },
-            "Map checkpoint exceeded its lifecycle timeout",
-          );
-        },
-        ...(transitionTickets === undefined ? {} : { transitionTickets }),
-        portalCooldowns,
-        mapChatEnabled: options.mapChatEnabled === true,
-        mapChatRateLimiter,
-        recordMapChat,
-        recordLifecycle(event) {
-          app.log.info({ event }, "Forest connection lifecycle changed");
-        },
-      }),
-    );
+    const forestHandler = gameServer
+      .define(
+        ROOM_NAMES.forest,
+        createForestRoom(playTickets, {
+          hardCapacity: placementDriver.hardCapacity,
+          ...(options.now === undefined ? {} : { now: options.now }),
+          ...(options.reconnectGraceSeconds === undefined
+            ? {}
+            : { reconnectGraceSeconds: options.reconnectGraceSeconds }),
+          ...(options.checkpointLocation === undefined
+            ? {}
+            : { checkpointLocation: options.checkpointLocation }),
+          ...(options.checkpointTimeoutMs === undefined
+            ? {}
+            : { checkpointTimeoutMs: options.checkpointTimeoutMs }),
+          recordCheckpointTimeout(details) {
+            if (options.recordCheckpointTimeout) {
+              options.recordCheckpointTimeout(details);
+              return;
+            }
+            app.log.warn(
+              { event: "map_checkpoint_timeout", ...details },
+              "Map checkpoint exceeded its lifecycle timeout",
+            );
+          },
+          ...(transitionTickets === undefined ? {} : { transitionTickets }),
+          portalCooldowns,
+          parties,
+          placement: placementDriver,
+          canAccessMap,
+          recordPartyTravelFailure(actionId) {
+            app.log.error(
+              {
+                event: "party_travel_failure",
+                actionId,
+                logicalMapId: "map:forest",
+              },
+              "Party travel failed unexpectedly",
+            );
+          },
+          mapChatEnabled: options.mapChatEnabled === true,
+          mapChatRateLimiter,
+          recordMapChat,
+          recordLifecycle(event) {
+            app.log.info({ event }, "Forest connection lifecycle changed");
+          },
+        }),
+      )
+      .filterBy(["partyReservationId"]);
     registerPlacementLifecycle(forestHandler, "map:forest", app);
   }
   await gameServer.listen(options.port, options.host);

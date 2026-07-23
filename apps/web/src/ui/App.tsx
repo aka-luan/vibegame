@@ -34,6 +34,8 @@ function mapArtifactFor(mapId: string | undefined): ClientMapArtifact {
 
 type CombatSnapshot = Pick<
   VillagePresenceSnapshot,
+  | "localEntityId"
+  | "players"
   | "monsters"
   | "selectedTargetEntityId"
   | "combatResult"
@@ -55,12 +57,17 @@ type CombatSnapshot = Pick<
   | "activePortalPrompt"
   | "transitionStatus"
   | "lastTransitionErrorCode"
+  | "partyState"
+  | "partyInvitation"
+  | "partyResult"
 >;
 
 function pickCombatSnapshot(
   presenceSnapshot: VillagePresenceSnapshot,
 ): CombatSnapshot {
   return {
+    localEntityId: presenceSnapshot.localEntityId,
+    players: presenceSnapshot.players,
     monsters: presenceSnapshot.monsters,
     selectedTargetEntityId: presenceSnapshot.selectedTargetEntityId,
     combatResult: presenceSnapshot.combatResult,
@@ -82,6 +89,9 @@ function pickCombatSnapshot(
     activePortalPrompt: presenceSnapshot.activePortalPrompt,
     transitionStatus: presenceSnapshot.transitionStatus,
     lastTransitionErrorCode: presenceSnapshot.lastTransitionErrorCode,
+    partyState: presenceSnapshot.partyState,
+    partyInvitation: presenceSnapshot.partyInvitation,
+    partyResult: presenceSnapshot.partyResult,
   };
 }
 
@@ -175,6 +185,8 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   const [guidanceEnabled, setGuidanceEnabled] = useState(true);
   const [chatText, setChatText] = useState("");
   const [combatSnapshot, setCombatSnapshot] = useState<CombatSnapshot>({
+    localEntityId: "",
+    players: [],
     monsters: [],
     selectedTargetEntityId: null,
     combatResult: undefined,
@@ -196,6 +208,9 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     activePortalPrompt: null,
     transitionStatus: "idle",
     lastTransitionErrorCode: undefined,
+    partyState: { members: [] },
+    partyInvitation: undefined,
+    partyResult: undefined,
   });
   const renderedMapId = useRef<string | null>(null);
 
@@ -424,6 +439,20 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       result.defeated ? "Mossback defeated." : `Hit for ${result.damage}.`
     }`;
   })();
+  const localPartyMember = combatSnapshot.partyState.members.find(
+    (member) => member.entityId === combatSnapshot.localEntityId,
+  );
+  const partyEntityIds = new Set(
+    combatSnapshot.partyState.members.map((member) => member.entityId),
+  );
+  const partyInviteCandidates = combatSnapshot.players.filter(
+    (player) =>
+      player.entityId !== combatSnapshot.localEntityId &&
+      !partyEntityIds.has(player.entityId),
+  );
+  const canInviteToParty =
+    combatSnapshot.partyState.members.length === 0 ||
+    localPartyMember?.leader === true;
 
   if (!useDevelopmentLogin && accountReady && !joined) {
     return (
@@ -536,6 +565,111 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
       {snapshot.interaction ? (
         <p className="interaction-hint">E — {snapshot.interaction}</p>
       ) : null}
+      <section aria-labelledby="party-heading" className="party-panel">
+        <h2 id="party-heading">Party</h2>
+        {combatSnapshot.partyInvitation ? (
+          <div className="party-invitation" role="status">
+            <p>
+              {combatSnapshot.partyInvitation.inviter.displayName} invited you
+              to a party.
+            </p>
+            <button
+              type="button"
+              onClick={() =>
+                presence.current?.acceptPartyInvitation(
+                  combatSnapshot.partyInvitation!.invitationId,
+                )
+              }
+            >
+              Accept invitation from{" "}
+              {combatSnapshot.partyInvitation.inviter.displayName}
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                presence.current?.declinePartyInvitation(
+                  combatSnapshot.partyInvitation!.invitationId,
+                )
+              }
+            >
+              Decline invitation from{" "}
+              {combatSnapshot.partyInvitation.inviter.displayName}
+            </button>
+          </div>
+        ) : null}
+        {combatSnapshot.partyState.members.length > 0 ? (
+          <>
+            <ul className="party-members">
+              {combatSnapshot.partyState.members.map((member) => (
+                <li key={member.entityId}>
+                  <span>
+                    {member.displayName}
+                    {member.leader ? " — leader" : ""} — {member.logicalMapId}
+                    {member.connected ? "" : " — reconnecting"}
+                  </span>
+                  {member.entityId !== combatSnapshot.localEntityId ? (
+                    <>
+                      {combatSnapshot.partyState.members.some(
+                        (candidate) =>
+                          candidate.entityId === combatSnapshot.localEntityId &&
+                          candidate.leader,
+                      ) ? (
+                        <button
+                          type="button"
+                          disabled={!member.connected}
+                          onClick={() =>
+                            presence.current?.changePartyLeader(member.entityId)
+                          }
+                        >
+                          Make {member.displayName} leader
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        disabled={
+                          !member.connected ||
+                          combatSnapshot.transitionStatus === "pending"
+                        }
+                        onClick={() =>
+                          presence.current?.travelToPartyMember(member.entityId)
+                        }
+                      >
+                        Travel to {member.displayName}
+                      </button>
+                    </>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+            <button
+              type="button"
+              onClick={() => presence.current?.leaveParty()}
+            >
+              Leave party
+            </button>
+          </>
+        ) : null}
+        {canInviteToParty && partyInviteCandidates.length > 0 ? (
+          <ul className="party-candidates">
+            {partyInviteCandidates.map((player) => (
+              <li key={player.entityId}>
+                <span>{player.displayName}</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    presence.current?.inviteToParty(player.entityId)
+                  }
+                >
+                  Invite {player.displayName}
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {combatSnapshot.partyResult && !combatSnapshot.partyResult.accepted ? (
+          <p role="alert">{combatSnapshot.partyResult.code}</p>
+        ) : null}
+      </section>
       <section aria-labelledby="quest-heading" className="quest-panel">
         <h2 id="quest-heading">Quest tracker</h2>
         {combatSnapshot.questState ? (
@@ -763,10 +897,23 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
           disabled={combatSnapshot.transitionStatus === "pending"}
           onClick={() => {
             const portalId = combatSnapshot.activePortalPrompt?.portalId;
-            if (portalId) presence.current?.requestPortalTransition(portalId);
+            const localPartyMember = combatSnapshot.partyState.members.find(
+              (member) => member.entityId === combatSnapshot.localEntityId,
+            );
+            if (portalId)
+              presence.current?.requestPortalTransition(
+                portalId,
+                localPartyMember?.leader === false,
+              );
           }}
         >
-          {combatSnapshot.activePortalPrompt.label}
+          {combatSnapshot.partyState.members.some(
+            (member) =>
+              member.entityId === combatSnapshot.localEntityId &&
+              !member.leader,
+          )
+            ? `${combatSnapshot.activePortalPrompt.label} alone — party stays here`
+            : combatSnapshot.activePortalPrompt.label}
         </button>
       ) : null}
       <button type="button" onClick={() => renderer.current?.focus()}>
