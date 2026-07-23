@@ -55,6 +55,18 @@ export const ERROR_CODES = {
   mapLocked: "MAP_LOCKED",
   entranceNotFound: "ENTRANCE_NOT_FOUND",
   transitionUnavailable: "TRANSITION_UNAVAILABLE",
+  instanceUnavailable: "INSTANCE_UNAVAILABLE",
+  invalidPartyIntention: "INVALID_PARTY_INTENTION",
+  partyInviteDuplicate: "PARTY_INVITE_DUPLICATE",
+  partyInviteNotFound: "PARTY_INVITE_NOT_FOUND",
+  partyFull: "PARTY_FULL",
+  partyAlreadyMember: "PARTY_ALREADY_MEMBER",
+  partyNotMember: "PARTY_NOT_MEMBER",
+  partyNotLeader: "PARTY_NOT_LEADER",
+  partyInvalidTarget: "PARTY_INVALID_TARGET",
+  partyMemberUnavailable: "PARTY_MEMBER_UNAVAILABLE",
+  partyTravelInProgress: "PARTY_TRAVEL_IN_PROGRESS",
+  partyAlreadyWithMember: "PARTY_ALREADY_WITH_MEMBER",
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
@@ -78,6 +90,13 @@ export const CLIENT_MESSAGES = {
   equipmentStateRequest: "equipment_state_request",
   mapChat: "map_chat",
   portalTransition: "portal_transition",
+  partyInvite: "party_invite",
+  partyAccept: "party_accept",
+  partyDecline: "party_decline",
+  partyLeave: "party_leave",
+  partyChangeLeader: "party_change_leader",
+  partyTravelToMember: "party_travel_to_member",
+  partyStateRequest: "party_state_request",
 } as const;
 
 export const SERVER_MESSAGES = {
@@ -104,7 +123,59 @@ export const SERVER_MESSAGES = {
   chatRejected: "chat_rejected",
   transitionTicket: "transition_ticket",
   transitionRejected: "transition_rejected",
+  partyInvitation: "party_invitation",
+  partyState: "party_state",
+  partyResult: "party_result",
 } as const;
+
+export interface PartyInviteIntention {
+  actionId: string;
+  targetEntityId: string;
+}
+
+export interface PartyInvitationResponseIntention {
+  actionId: string;
+  invitationId: string;
+}
+
+export interface PartyLeaveIntention {
+  actionId: string;
+}
+
+export interface PartyChangeLeaderIntention {
+  actionId: string;
+  targetEntityId: string;
+}
+
+export interface PartyTravelToMemberIntention {
+  actionId: string;
+  targetEntityId: string;
+}
+
+export interface PartyMemberState {
+  entityId: string;
+  displayName: string;
+  logicalMapId: string;
+  leader: boolean;
+  connected: boolean;
+}
+
+export interface PartyStateMessage {
+  members: PartyMemberState[];
+}
+
+export interface PartyInvitationMessage {
+  invitationId: string;
+  inviter: {
+    entityId: string;
+    displayName: string;
+    logicalMapId: string;
+  };
+}
+
+export type PartyResultMessage =
+  | { accepted: true; actionId: string }
+  | { accepted: false; actionId: string; code: ErrorCode };
 
 export interface MapChatIntention {
   text: string;
@@ -376,6 +447,7 @@ export interface QuestRewardMessage {
 export interface PortalTransitionIntention {
   actionId: string;
   portalId: string;
+  travelMode?: "alone";
 }
 
 export interface TransitionTicketMessage {

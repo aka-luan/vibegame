@@ -8,6 +8,7 @@ export const portalTransitionSchema = z
   .object({
     actionId: z.string().trim().min(1).max(64),
     portalId: z.string().trim().min(1).max(80),
+    travelMode: z.literal("alone").optional(),
   })
   .strict();
 

@@ -2,6 +2,7 @@ import type { ServerMapArtifact } from "@gameish/content";
 import { ERROR_CODES, type ErrorCode } from "@gameish/protocol";
 
 import type { TransitionTicketIssuer } from "../identity/transition-tickets.js";
+import { PARTY_JOIN_COMPLETION_GRACE_MS } from "../party/travel-admission.js";
 import {
   evaluatePortalTransition,
   portalTransitionSchema,
@@ -17,6 +18,23 @@ export type PortalTransitionOutcome =
       expiresAtMs: number;
       destinationRoomName: string;
       destinationMapId: string;
+    };
+
+export type CohesivePortalTransitionOutcome =
+  | { kind: "invalid" }
+  | { kind: "rejected"; actionId: string; code: ErrorCode }
+  | {
+      kind: "approved";
+      actionId: string;
+      destinationRoomName: string;
+      destinationMapId: string;
+      reservationId: string;
+      admissions: readonly {
+        sessionId: string;
+        memberId: string;
+        ticket: string;
+        expiresAtMs: number;
+      }[];
     };
 
 /**
@@ -149,6 +167,202 @@ export class PortalTransitionCoordinator {
       // once the cooldown expires.
       this.#inFlight.delete(input.sessionId);
     }
+  }
+
+  async evaluateCohesive(input: {
+    initiatorSessionId: string;
+    unsafeIntention: unknown;
+    reservationId: string;
+    members: readonly {
+      sessionId: string;
+      playerFoot: { x: number; y: number } | undefined;
+      identity: { userId: string; characterId: string } | undefined;
+      checkpoint: () => Promise<boolean>;
+    }[];
+    reserveCapacity: (input: {
+      reservationId: string;
+      destinationMapId: string;
+      memberIds: readonly string[];
+      expiresAtMs: number;
+    }) => boolean;
+    releaseCapacity: (reservationId: string) => void;
+    extendCapacity: (reservationId: string, expiresAtMs: number) => boolean;
+    revalidateMembers: () => boolean;
+  }): Promise<CohesivePortalTransitionOutcome> {
+    const parsed = portalTransitionSchema.safeParse(input.unsafeIntention);
+    if (!parsed.success || input.members.length === 0) {
+      return { kind: "invalid" };
+    }
+    const initiator = input.members.find(
+      (member) => member.sessionId === input.initiatorSessionId,
+    );
+    if (!initiator) return { kind: "invalid" };
+    // A repeat request from the initiator while their own transition is
+    // still in flight is the same rapid-retry `evaluate` rejects with the
+    // cooldown code; only another member's in-flight travel is a party
+    // condition.
+    if (this.#inFlight.has(initiator.sessionId)) {
+      return {
+        kind: "rejected",
+        actionId: parsed.data.actionId,
+        code: ERROR_CODES.portalOnCooldown,
+      };
+    }
+    if (
+      input.members.some(
+        (member) =>
+          !member.playerFoot ||
+          !member.identity ||
+          this.#inFlight.has(member.sessionId),
+      )
+    ) {
+      return {
+        kind: "rejected",
+        actionId: parsed.data.actionId,
+        code: ERROR_CODES.partyTravelInProgress,
+      };
+    }
+    const now = this.#now();
+    const evaluations = input.members.map((member) =>
+      evaluatePortalTransition({
+        sourceMap: this.#sourceMap,
+        portalId: parsed.data.portalId,
+        now,
+        lastTransitionAtMs: this.#cooldowns.lastTransitionAtMs(
+          member.identity!.characterId,
+        ),
+        playerFoot: member.playerFoot!,
+      }),
+    );
+    const rejection = evaluations.find((evaluation) => !evaluation.ok);
+    if (rejection && !rejection.ok) {
+      return {
+        kind: "rejected",
+        actionId: parsed.data.actionId,
+        code: rejection.code,
+      };
+    }
+    const destination = evaluations[0];
+    if (!destination?.ok) return { kind: "invalid" };
+    for (const member of input.members) {
+      this.#inFlight.add(member.sessionId);
+      this.#cooldowns.stamp(member.identity!.characterId, now);
+    }
+    const reservationExpiresAtMs = now + 15_000;
+    let reserved: boolean;
+    try {
+      reserved = input.reserveCapacity({
+        reservationId: input.reservationId,
+        destinationMapId: destination.destinationMapId,
+        memberIds: input.members.map((member) => member.identity!.characterId),
+        expiresAtMs: reservationExpiresAtMs,
+      });
+    } catch {
+      input.releaseCapacity(input.reservationId);
+      this.#clearInFlight(input.members);
+      return {
+        kind: "rejected",
+        actionId: parsed.data.actionId,
+        code: ERROR_CODES.transitionUnavailable,
+      };
+    }
+    if (!reserved) {
+      this.#clearInFlight(input.members);
+      return {
+        kind: "rejected",
+        actionId: parsed.data.actionId,
+        code: ERROR_CODES.instanceUnavailable,
+      };
+    }
+    try {
+      const checkpointed = await Promise.all(
+        input.members.map((member) => member.checkpoint()),
+      );
+      if (checkpointed.some((value) => !value)) {
+        input.releaseCapacity(input.reservationId);
+        return {
+          kind: "rejected",
+          actionId: parsed.data.actionId,
+          code: ERROR_CODES.transitionUnavailable,
+        };
+      }
+      if (!input.revalidateMembers()) {
+        input.releaseCapacity(input.reservationId);
+        return {
+          kind: "rejected",
+          actionId: parsed.data.actionId,
+          code: ERROR_CODES.partyMemberUnavailable,
+        };
+      }
+      const issued = await Promise.all(
+        input.members.map(async (member) => {
+          const identity = member.identity!;
+          const ticket = await this.#transitionTickets.issue({
+            userId: identity.userId,
+            characterId: identity.characterId,
+            destinationMapId: destination.destinationMapId,
+            destinationEntranceId: destination.destinationEntranceId,
+            contentVersion: this.#sourceMap.contentVersion,
+          });
+          return ticket
+            ? {
+                sessionId: member.sessionId,
+                memberId: identity.characterId,
+                ...ticket,
+              }
+            : undefined;
+        }),
+      );
+      if (issued.some((admission) => admission === undefined)) {
+        input.releaseCapacity(input.reservationId);
+        return {
+          kind: "rejected",
+          actionId: parsed.data.actionId,
+          code: ERROR_CODES.transitionUnavailable,
+        };
+      }
+      const admissions = issued.filter(
+        (admission): admission is NonNullable<typeof admission> =>
+          admission !== undefined,
+      );
+      const latestAdmissionExpiry = Math.max(
+        ...admissions.map((admission) => admission.expiresAtMs),
+      );
+      if (
+        !input.extendCapacity(
+          input.reservationId,
+          latestAdmissionExpiry + PARTY_JOIN_COMPLETION_GRACE_MS,
+        )
+      ) {
+        input.releaseCapacity(input.reservationId);
+        return {
+          kind: "rejected",
+          actionId: parsed.data.actionId,
+          code: ERROR_CODES.instanceUnavailable,
+        };
+      }
+      return {
+        kind: "approved",
+        actionId: parsed.data.actionId,
+        destinationRoomName: destination.destinationRoomName,
+        destinationMapId: destination.destinationMapId,
+        reservationId: input.reservationId,
+        admissions,
+      };
+    } catch {
+      input.releaseCapacity(input.reservationId);
+      return {
+        kind: "rejected",
+        actionId: parsed.data.actionId,
+        code: ERROR_CODES.transitionUnavailable,
+      };
+    } finally {
+      this.#clearInFlight(input.members);
+    }
+  }
+
+  #clearInFlight(members: readonly { sessionId: string }[]): void {
+    for (const member of members) this.#inFlight.delete(member.sessionId);
   }
 
   #approved(

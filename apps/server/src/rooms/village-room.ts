@@ -28,6 +28,7 @@ import {
   type PublicVillageState,
   type TransitionRejectedMessage,
   type TransitionTicketMessage,
+  type PartyResultMessage,
 } from "@gameish/protocol";
 import { moveCharacterFoot, PLAYER_MOVEMENT } from "@gameish/world";
 import { z } from "zod";
@@ -38,8 +39,10 @@ import {
   PortalCooldownRegistry,
   PortalTransitionCoordinator,
 } from "./portal-transition-handler.js";
+import { portalTransitionSchema } from "./portal-transition.js";
 import {
   DEFAULT_MAP_INSTANCE_HARD_CAPACITY,
+  MapPlacementDriver,
   type MapRoomMetadata,
 } from "./placement.js";
 import { resolveSpawnPosition } from "./spawn-resolution.js";
@@ -81,10 +84,16 @@ import {
   MapChatRateLimiter,
   validateMapChatIntention,
 } from "../chat/map-chat.js";
+import { PartyCoordinator } from "../party/coordinator.js";
+import { registerPartyRoomHandlers } from "../party/room-handlers.js";
+import { prepareTravelToMember } from "../party/travel-to-member.js";
 
-const joinOptionsSchema = z
+const clientJoinOptionsSchema = z
   .object({ ticket: z.string().min(1).max(200) })
   .strict();
+const joinOptionsSchema = clientJoinOptionsSchema.extend({
+  partyReservationId: z.string().min(1).max(100).optional(),
+});
 const movementIntentionSchema = z
   .object({
     x: z.number().finite().min(-1).max(1),
@@ -307,6 +316,10 @@ export function createVillageRoom(
     ) => void;
     transitionTickets?: TransitionTicketIssuer;
     portalCooldowns?: PortalCooldownRegistry;
+    parties?: PartyCoordinator;
+    placement?: MapPlacementDriver;
+    canAccessMap?: (characterId: string, logicalMapId: string) => boolean;
+    recordPartyTravelFailure?: (actionId: string) => void;
   } = {},
 ) {
   const transitionTickets: TransitionTicketIssuer =
@@ -317,6 +330,13 @@ export function createVillageRoom(
   // cooldown survives the transition that removes the source session.
   const portalCooldowns =
     options.portalCooldowns ?? new PortalCooldownRegistry();
+  const parties = options.parties ?? new PartyCoordinator();
+  const placement =
+    options.placement ??
+    new MapPlacementDriver({
+      softPopulationTarget: 25,
+      hardCapacity: options.hardCapacity ?? DEFAULT_MAP_INSTANCE_HARD_CAPACITY,
+    });
   return class VillageRoom extends Room<{
     state: VillageState;
     metadata: MapRoomMetadata;
@@ -381,16 +401,48 @@ export function createVillageRoom(
     readonly #joinedAtMs = new Map<string, number>();
     readonly #lastCheckpointAtMs = new Map<string, number>();
     readonly #disconnectedSessions = new Set<string>();
+    readonly #partyDepartures = new Set<string>();
     readonly #participationWindow = new RewardSettlementWindow();
     #defeatSequence = 0;
     #monsterLifecycle!: MonsterLifecycle;
 
-    override onCreate() {
+    static override onAuth(
+      _token: string,
+      unsafeOptions: unknown,
+    ): Promise<unknown> {
+      const parsed = clientJoinOptionsSchema.safeParse(unsafeOptions);
+      if (!parsed.success) {
+        throw new ServerError(4_221, ERROR_CODES.invalidJoinOptions);
+      }
+      const reservationId = parties.travelReservationForAdmission(
+        parsed.data.ticket,
+        villageSlice.mapId,
+        (options.now ?? Date.now)(),
+      );
+      if (
+        reservationId !== undefined &&
+        !placement.hasPartyReservationToken(reservationId, villageSlice.mapId)
+      ) {
+        throw new ServerError(4_228, ERROR_CODES.instanceUnavailable);
+      }
+      if (reservationId !== undefined) {
+        (unsafeOptions as { partyReservationId?: string }).partyReservationId =
+          reservationId;
+      }
+      return Promise.resolve(true);
+    }
+
+    override onCreate(unsafeOptions?: unknown) {
+      const creationOptions = joinOptionsSchema.safeParse(unsafeOptions);
       this.maxClients =
         options.hardCapacity ?? DEFAULT_MAP_INSTANCE_HARD_CAPACITY;
       this.metadata = {
         logicalMapId: villageSlice.mapId,
         instanceRole: "public",
+        ...(creationOptions.success &&
+        creationOptions.data.partyReservationId !== undefined
+          ? { partyReservationId: creationOptions.data.partyReservationId }
+          : {}),
       };
       if (!this.#questDefinition) {
         throw new Error("Village quest definition is unavailable");
@@ -450,6 +502,19 @@ export function createVillageRoom(
           pending.set(intention.data.sequence, intention.data);
         },
       );
+      registerPartyRoomHandlers({
+        room: this,
+        parties,
+        memberIdFor: (sessionId) =>
+          this.#playerIdentity.get(sessionId)?.characterId,
+        travelToMember: (client, intention) =>
+          this.#handleTravelToMember(client, intention),
+        ...(options.recordPartyTravelFailure === undefined
+          ? {}
+          : {
+              recordUnexpectedTravelFailure: options.recordPartyTravelFailure,
+            }),
+      });
       this.onMessage(
         CLIENT_MESSAGES.targetSelection,
         (client, unsafeSelection: unknown) => {
@@ -536,7 +601,26 @@ export function createVillageRoom(
       this.onMessage(
         CLIENT_MESSAGES.portalTransition,
         (client, unsafeIntention: unknown) => {
-          void this.#handlePortalTransition(client, unsafeIntention);
+          const memberId = this.#playerIdentity.get(
+            client.sessionId,
+          )?.characterId;
+          void this.#handlePortalTransition(client, unsafeIntention).catch(
+            () => {
+              if (memberId) parties.cancelTravelForParty(memberId);
+              const actionId =
+                unsafeIntention &&
+                typeof unsafeIntention === "object" &&
+                "actionId" in unsafeIntention &&
+                typeof unsafeIntention.actionId === "string"
+                  ? unsafeIntention.actionId
+                  : "invalid-transition";
+              options.recordPartyTravelFailure?.(actionId);
+              client.send(SERVER_MESSAGES.transitionRejected, {
+                actionId,
+                code: ERROR_CODES.transitionUnavailable,
+              } satisfies TransitionRejectedMessage);
+            },
+          );
         },
       );
 
@@ -972,34 +1056,206 @@ export function createVillageRoom(
       client: Client,
       unsafeIntention: unknown,
     ): Promise<void> {
-      const player = this.state.players.get(client.sessionId);
       const identity = this.#playerIdentity.get(client.sessionId);
-      const outcome = await this.#portalTransitions.evaluate({
-        sessionId: client.sessionId,
-        unsafeIntention,
-        playerFoot: player ? { x: player.x, y: player.y } : undefined,
-        identity,
-        // A durable character's checkpoint is what AC4 recovery reads, so a
-        // configured checkpoint that fails must block the transition rather
-        // than strand the character at an unknown location. A development
-        // identity has no durable location row at all (same convention as
-        // `#questsForCharacter`), so there is nothing to lose and the
-        // transition proceeds.
-        checkpoint: () =>
-          this.#checkpointLocation &&
-          identity &&
-          !identity.characterId.startsWith("development:")
-            ? this.#checkpoint(client.sessionId, "online")
-            : Promise.resolve(true),
+      if (!identity) return;
+      const intention = portalTransitionSchema.safeParse(unsafeIntention);
+      if (!intention.success) return;
+      const plan = parties.beginCohesiveTravel(
+        identity.characterId,
+        this.roomId,
+        intention.data.travelMode === "alone",
+      );
+      if (!plan.accepted) {
+        const actionId =
+          unsafeIntention &&
+          typeof unsafeIntention === "object" &&
+          "actionId" in unsafeIntention &&
+          typeof unsafeIntention.actionId === "string"
+            ? unsafeIntention.actionId
+            : "invalid-transition";
+        client.send(SERVER_MESSAGES.transitionRejected, {
+          actionId,
+          code: plan.code,
+        } satisfies TransitionRejectedMessage);
+        return;
+      }
+      const outcome = await this.#portalTransitions.evaluateCohesive({
+        initiatorSessionId: client.sessionId,
+        unsafeIntention: intention.data,
+        reservationId: plan.reservationId,
+        members: plan.members.map((member) => {
+          const player = this.state.players.get(member.entityId);
+          const memberIdentity = this.#playerIdentity.get(member.entityId);
+          return {
+            sessionId: member.entityId,
+            playerFoot: player ? { x: player.x, y: player.y } : undefined,
+            identity: memberIdentity,
+            checkpoint: () =>
+              this.#checkpointLocation &&
+              memberIdentity &&
+              !memberIdentity.characterId.startsWith("development:")
+                ? this.#checkpoint(member.entityId, "online")
+                : Promise.resolve(true),
+          };
+        }),
+        reserveCapacity: (reservation) =>
+          placement.reservePartyCapacity({
+            reservationId: reservation.reservationId,
+            logicalMapId: reservation.destinationMapId,
+            memberIds: reservation.memberIds,
+            expiresAtMs: reservation.expiresAtMs,
+          }).accepted,
+        releaseCapacity: (reservationId) =>
+          placement.releasePartyReservation(reservationId),
+        extendCapacity: (reservationId, expiresAtMs) =>
+          placement.extendPartyReservation(reservationId, expiresAtMs),
+        revalidateMembers: () =>
+          parties.cohesiveTravelStillAvailable(plan.members, this.roomId),
       });
-      if (outcome.kind === "invalid") return;
+      if (outcome.kind === "invalid") {
+        parties.cancelTravel(plan.members.map((member) => member.memberId));
+        return;
+      }
       if (outcome.kind === "rejected") {
+        parties.cancelTravel(plan.members.map((member) => member.memberId));
+        if (outcome.code === ERROR_CODES.transitionUnavailable) {
+          options.recordPartyTravelFailure?.(outcome.actionId);
+        }
         client.send(SERVER_MESSAGES.transitionRejected, {
           actionId: outcome.actionId,
           code: outcome.code,
         } satisfies TransitionRejectedMessage);
         return;
       }
+      if (
+        outcome.admissions.some(
+          (admission) =>
+            this.#disconnectedSessions.has(admission.sessionId) ||
+            !this.clients.some(
+              (candidate) => candidate.sessionId === admission.sessionId,
+            ),
+        )
+      ) {
+        placement.releasePartyReservation(outcome.reservationId);
+        parties.cancelTravel(plan.members.map((member) => member.memberId));
+        client.send(SERVER_MESSAGES.transitionRejected, {
+          actionId: outcome.actionId,
+          code: ERROR_CODES.partyMemberUnavailable,
+        } satisfies TransitionRejectedMessage);
+        return;
+      }
+      for (const admission of outcome.admissions) {
+        parties.bindTravelAdmission({
+          ticket: admission.ticket,
+          reservationId: outcome.reservationId,
+          memberId: admission.memberId,
+          logicalMapId: outcome.destinationMapId,
+          expiresAtMs: admission.expiresAtMs,
+        });
+      }
+      for (const admission of outcome.admissions) {
+        const traveler = this.clients.find(
+          (candidate) => candidate.sessionId === admission.sessionId,
+        )!;
+        traveler.send(SERVER_MESSAGES.transitionTicket, {
+          actionId: outcome.actionId,
+          ticket: admission.ticket,
+          destinationRoomName: outcome.destinationRoomName,
+          destinationMapId: outcome.destinationMapId,
+          expiresAtMs: admission.expiresAtMs,
+        } satisfies TransitionTicketMessage);
+      }
+      // Closing the connection in the same synchronous turn as the ticket
+      // send can drop the still-buffered ticket, leaving that member behind
+      // without feedback — the silent split AC2 forbids. One macrotask lets
+      // the transport flush every ticket before any traveler is detached.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      for (const admission of outcome.admissions) {
+        const traveler = this.clients.find(
+          (candidate) => candidate.sessionId === admission.sessionId,
+        );
+        // A member who disconnected during the flush macrotask was already
+        // handled by onLeave; skipping them keeps the remaining travelers'
+        // departures intact instead of aborting the loop mid-party.
+        if (!traveler) continue;
+        parties.departForTravel(admission.memberId);
+        this.#partyDepartures.add(admission.sessionId);
+        this.#removeSession(admission.sessionId);
+        traveler.leave(4_000, "portal_transition");
+      }
+    }
+
+    async #handleTravelToMember(
+      client: Client,
+      intention: { actionId: string; targetEntityId: string },
+    ): Promise<void> {
+      const identity = this.#playerIdentity.get(client.sessionId);
+      if (!identity) return;
+      const plan = parties.beginTravelToMember(
+        identity.characterId,
+        intention.targetEntityId,
+      );
+      if (!plan.accepted) {
+        client.send(SERVER_MESSAGES.partyResult, {
+          accepted: false,
+          actionId: intention.actionId,
+          code: plan.code,
+        } satisfies PartyResultMessage);
+        return;
+      }
+      const outcome = await prepareTravelToMember({
+        actionId: intention.actionId,
+        plan,
+        placement,
+        transitionTickets,
+        now: this.#now,
+        canAccessMap: options.canAccessMap ?? (() => false),
+        checkpoint: () =>
+          this.#checkpointLocation &&
+          !identity.characterId.startsWith("development:")
+            ? this.#checkpoint(client.sessionId, "online")
+            : Promise.resolve(true),
+        revalidate: () => parties.travelToMemberStillAvailable(plan),
+      });
+      if (outcome.kind === "rejected") {
+        parties.cancelTravel([identity.characterId]);
+        if (outcome.code === ERROR_CODES.transitionUnavailable) {
+          options.recordPartyTravelFailure?.(outcome.actionId);
+        }
+        client.send(SERVER_MESSAGES.partyResult, {
+          accepted: false,
+          actionId: outcome.actionId,
+          code: outcome.code,
+        } satisfies PartyResultMessage);
+        return;
+      }
+      if (
+        !parties.travelToMemberStillAvailable(plan) ||
+        this.#disconnectedSessions.has(client.sessionId) ||
+        !this.clients.some(
+          (candidate) => candidate.sessionId === client.sessionId,
+        )
+      ) {
+        placement.releasePartyReservation(outcome.reservationId);
+        parties.cancelTravel([identity.characterId]);
+        client.send(SERVER_MESSAGES.partyResult, {
+          accepted: false,
+          actionId: intention.actionId,
+          code: ERROR_CODES.partyMemberUnavailable,
+        } satisfies PartyResultMessage);
+        return;
+      }
+      parties.bindTravelAdmission({
+        ticket: outcome.ticket,
+        reservationId: outcome.reservationId,
+        memberId: outcome.memberId,
+        logicalMapId: outcome.destinationMapId,
+        expiresAtMs: outcome.expiresAtMs,
+      });
+      client.send(SERVER_MESSAGES.partyResult, {
+        accepted: true,
+        actionId: outcome.actionId,
+      } satisfies PartyResultMessage);
       client.send(SERVER_MESSAGES.transitionTicket, {
         actionId: outcome.actionId,
         ticket: outcome.ticket,
@@ -1007,12 +1263,20 @@ export function createVillageRoom(
         destinationMapId: outcome.destinationMapId,
         expiresAtMs: outcome.expiresAtMs,
       } satisfies TransitionTicketMessage);
-      // Remove the source presence immediately: the client now holds a
-      // single-use ticket for the destination room, so leaving this one
-      // consented (not a drop) prevents both a duplicated presence and an
-      // unwanted reconnection grace window (AC3).
+      // One macrotask so the buffered ticket flushes before the connection
+      // closes; see the identical wait in the cohesive portal path.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (
+        !this.clients.some(
+          (candidate) => candidate.sessionId === client.sessionId,
+        )
+      ) {
+        return;
+      }
+      parties.departForTravel(identity.characterId);
+      this.#partyDepartures.add(client.sessionId);
       this.#removeSession(client.sessionId);
-      client.leave(4_000, "portal_transition");
+      client.leave(4_000, "party_travel_to_member");
     }
 
     #removeSession(sessionId: string): void {
@@ -1050,7 +1314,6 @@ export function createVillageRoom(
       ) {
         throw new ServerError(4_225, ERROR_CODES.staleContentVersion);
       }
-
       let equipment: DurableEquipmentSnapshot;
       try {
         equipment = await this.#equipmentForCharacter(
@@ -1081,6 +1344,48 @@ export function createVillageRoom(
         throw new ServerError(4_227, ERROR_CODES.entranceNotFound);
       }
 
+      const definition = this.#questDefinition;
+      if (!definition)
+        throw new Error("Village quest definition is unavailable");
+      const questSnapshot = await this.#questsForCharacter(
+        consumption.admission.characterId,
+      ).loadQuest(consumption.admission.characterId, definition.id);
+      const questSession = new QuestDialogueSession({
+        characterId: consumption.admission.characterId,
+        character: {
+          level: consumption.admission.characterState?.progression.level ?? 1,
+          flags: new Set(),
+        },
+        snapshot: questSnapshot,
+        definition,
+        dialogue: villageDialogue,
+      });
+      const classDefinition = this.#combatCatalog.classes[0];
+      if (!classDefinition) throw new Error("Village class is unavailable");
+
+      // Consume the coordinated seat only after all fallible join preparation
+      // has completed, so a failed equipment/quest load cannot free capacity
+      // that the rest of the party was promised.
+      if (options.data.partyReservationId !== undefined) {
+        if (
+          !parties.claimTravelAdmission(
+            options.data.ticket,
+            options.data.partyReservationId,
+            consumption.admission.characterId,
+            villageSlice.mapId,
+            this.#now(),
+          ) ||
+          !placement.claimPartySeat(
+            options.data.partyReservationId,
+            villageSlice.mapId,
+            consumption.admission.characterId,
+            this.roomId,
+          )
+        ) {
+          throw new ServerError(4_228, ERROR_CODES.instanceUnavailable);
+        }
+      }
+
       const player = new PublicPlayer();
       player.displayName = consumption.admission.displayName;
       player.x = position.x;
@@ -1095,34 +1400,20 @@ export function createVillageRoom(
         characterId: consumption.admission.characterId,
         partyId: consumption.admission.partyId,
       });
-      const questSnapshot = await this.#questsForCharacter(
-        consumption.admission.characterId,
-      ).loadQuest(
-        consumption.admission.characterId,
-        this.#questDefinition?.id ?? villageSlice.questId,
-      );
-      const definition = this.#questDefinition;
-      if (!definition)
-        throw new Error("Village quest definition is unavailable");
-      this.#questSessions.set(
-        client.sessionId,
-        new QuestDialogueSession({
-          characterId: consumption.admission.characterId,
-          character: {
-            level: consumption.admission.characterState?.progression.level ?? 1,
-            flags: new Set(),
-          },
-          snapshot: questSnapshot,
-          definition,
-          dialogue: villageDialogue,
-        }),
-      );
+      parties.registerPresence({
+        memberId: consumption.admission.characterId,
+        userId: consumption.admission.userId,
+        entityId: client.sessionId,
+        displayName: consumption.admission.displayName,
+        logicalMapId: villageSlice.mapId,
+        internalRoomId: this.roomId,
+        send: (messageType, payload) => client.send(messageType, payload),
+      });
+      this.#questSessions.set(client.sessionId, questSession);
       this.#joinedAtMs.set(client.sessionId, this.state.serverTimeMs);
       this.#pendingIntentions.set(client.sessionId, new Map());
       this.#lastProcessedSequences.set(client.sessionId, 0);
       this.#intentionViolations.set(client.sessionId, 0);
-      const classDefinition = this.#combatCatalog.classes[0];
-      if (!classDefinition) throw new Error("Village class is unavailable");
       this.#playerCombat.set(client.sessionId, {
         targetEntityId: null,
         resource: classDefinition.serverOnly.startingResource,
@@ -1150,6 +1441,10 @@ export function createVillageRoom(
       // placement driver cannot observe a freed seat before durable recovery
       // state has been attempted.
       await this.#checkpoint(client.sessionId, "offline");
+      const identity = this.#playerIdentity.get(client.sessionId);
+      if (!this.#partyDepartures.delete(client.sessionId) && identity) {
+        parties.disconnect(identity.characterId);
+      }
       this.#removeSession(client.sessionId);
       options.recordLifecycle?.("removed");
     }
@@ -1158,6 +1453,8 @@ export function createVillageRoom(
       if (!this.state.players.has(client.sessionId)) return;
       void this.#checkpoint(client.sessionId, "disconnected");
       this.#disconnectedSessions.add(client.sessionId);
+      const identity = this.#playerIdentity.get(client.sessionId);
+      if (identity) parties.markDisconnected(identity.characterId);
       options.recordLifecycle?.("disconnected");
       void this.allowReconnection(client, this.#reconnectGraceSeconds).catch(
         () => undefined,
@@ -1166,6 +1463,8 @@ export function createVillageRoom(
 
     override onReconnect(client: Client) {
       this.#disconnectedSessions.delete(client.sessionId);
+      const identity = this.#playerIdentity.get(client.sessionId);
+      if (identity) parties.markReconnected(identity.characterId);
       void this.#checkpoint(client.sessionId, "online");
       options.recordLifecycle?.("reconnected");
       this.#sendAuthoritativeMovement(client);
@@ -1399,7 +1698,9 @@ export function createVillageRoom(
     // prettier-ignore
     #recordParticipation(client: Client): void {
       const identity = this.#playerIdentity.get(client.sessionId);
-      if (identity) this.#participationWindow.recordActivity({ ...identity, atMs: this.state.serverTimeMs });
+      if (identity) this.#participationWindow.recordActivity({ ...identity,
+        partyId: parties.partyIdFor(identity.characterId),
+        atMs: this.state.serverTimeMs });
     }
 
     // prettier-ignore
@@ -1407,7 +1708,9 @@ export function createVillageRoom(
       const candidates: RewardCandidate[] = []; for (const [recipientSessionId, player] of this.state.players) {
         const identity = this.#playerIdentity.get(recipientSessionId);
         if (!identity) continue;
-        candidates.push({ ...identity, recipientSessionId, x: player.x, y: player.y,
+        candidates.push({ ...identity,
+          partyId: parties.partyIdFor(identity.characterId),
+          recipientSessionId, x: player.x, y: player.y,
           connected: !this.#disconnectedSessions.has(recipientSessionId), joinedAtMs: this.#joinedAtMs.get(recipientSessionId) ?? Number.MAX_SAFE_INTEGER });
       }
       const monster = this.#monsterLifecycle.state; const sourceMonsterId = this.#combatCatalog.monsters[0]?.id;
