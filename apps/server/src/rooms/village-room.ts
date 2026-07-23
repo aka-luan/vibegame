@@ -1173,7 +1173,11 @@ export function createVillageRoom(
       for (const admission of outcome.admissions) {
         const traveler = this.clients.find(
           (candidate) => candidate.sessionId === admission.sessionId,
-        )!;
+        );
+        // A member who disconnected during the flush macrotask was already
+        // handled by onLeave; skipping them keeps the remaining travelers'
+        // departures intact instead of aborting the loop mid-party.
+        if (!traveler) continue;
         parties.departForTravel(admission.memberId);
         this.#partyDepartures.add(admission.sessionId);
         this.#removeSession(admission.sessionId);
@@ -1262,6 +1266,13 @@ export function createVillageRoom(
       // One macrotask so the buffered ticket flushes before the connection
       // closes; see the identical wait in the cohesive portal path.
       await new Promise((resolve) => setTimeout(resolve, 0));
+      if (
+        !this.clients.some(
+          (candidate) => candidate.sessionId === client.sessionId,
+        )
+      ) {
+        return;
+      }
       parties.departForTravel(identity.characterId);
       this.#partyDepartures.add(client.sessionId);
       this.#removeSession(client.sessionId);

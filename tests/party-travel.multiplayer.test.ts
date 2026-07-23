@@ -148,13 +148,14 @@ describe("party races and cohesive travel", () => {
     expect(decisions.filter((decision) => !decision.accepted)).toEqual([
       expect.objectContaining({ code: ERROR_CODES.partyFull }),
     ]);
-    const stateMessage = nextMessage<PartyStateMessage>(
-      leader,
-      SERVER_MESSAGES.partyState,
-    );
+    let state: PartyStateMessage | undefined;
+    leader.onMessage<PartyStateMessage>(SERVER_MESSAGES.partyState, (next) => {
+      state = next;
+    });
     leader.send(CLIENT_MESSAGES.partyStateRequest);
-    const state = await stateMessage;
-    expect(state.members).toHaveLength(4);
+    await vi.waitFor(() => {
+      expect(state?.members).toHaveLength(4);
+    });
     expect(JSON.stringify(state)).not.toMatch(
       /userId|characterId|partyId|roomId|session|internal/i,
     );
