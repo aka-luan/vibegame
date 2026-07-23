@@ -181,7 +181,7 @@ export function runQuestPersistenceContract(
       await transition(activeQuestId, { kind: "accept" });
       const fromActive = await transition(activeQuestId, {
         kind: "complete",
-        completionId: `${activeQuestId}:complete`,
+        completionId: `quest-completion:${harness.characterId}:${activeQuestId}`,
       });
       expect(fromActive.applied).toBe(false);
       expect(fromActive).toMatchObject({ reason: "illegal_transition" });
@@ -197,7 +197,7 @@ export function runQuestPersistenceContract(
       }
       const fromReady = await transition(readyQuestId, {
         kind: "complete",
-        completionId: `${readyQuestId}:complete`,
+        completionId: `quest-completion:${harness.characterId}:${readyQuestId}`,
       });
       expect(fromReady).toMatchObject({
         applied: true,
@@ -215,7 +215,7 @@ export function runQuestPersistenceContract(
           targetId: objective.targetId,
         });
       }
-      const completionId = `${questId}:complete`;
+      const completionId = `quest-completion:${harness.characterId}:${questId}`;
 
       const first = await transition(
         questId,

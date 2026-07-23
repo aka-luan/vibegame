@@ -33,6 +33,7 @@ export interface DurableQuestSnapshot {
   progress: number;
   appliedEventIds: readonly string[];
   revision: number;
+  completionId?: string;
 }
 
 export interface DurableQuestObjective {
@@ -55,6 +56,15 @@ export interface DurableQuestReward {
 
 export type DurableQuestTransition =
   | { kind: "accept" }
+  | {
+      kind: "objective";
+      event: {
+        eventId: string;
+        kind: string;
+        targetId: string;
+        count?: number;
+      };
+    }
   | { kind: "objective"; eventId: string; targetId: string }
   | { kind: "complete"; completionId: string };
 
@@ -62,13 +72,24 @@ export type DurableQuestTransitionResult =
   | { applied: true; snapshot: DurableQuestSnapshot }
   | {
       applied: false;
-      reason: "already_applied" | "illegal_transition" | "objective_mismatch";
+      reason:
+        | "already_applied"
+        | "illegal_transition"
+        | "objective_mismatch"
+        | "invalid_event"
+        | "prerequisites_unmet"
+        | "invalid_completion_id";
       snapshot: DurableQuestSnapshot;
     };
 
 export type QuestTransitionDecider = (
   snapshot: DurableQuestSnapshot,
-  context: { objective: DurableQuestObjective },
+  context: {
+    objective: DurableQuestObjective;
+    prerequisiteQuestIds?: readonly string[];
+    completedPrerequisiteQuestIds?: ReadonlySet<string>;
+    completionId?: string;
+  },
   transition: DurableQuestTransition,
 ) => DurableQuestTransitionResult;
 
@@ -420,6 +441,8 @@ export class DurableStateRepository {
     questId: string;
     objective: DurableQuestObjective;
     transition: DurableQuestTransition;
+    prerequisiteQuestIds?: readonly string[];
+    completedPrerequisiteQuestIds?: ReadonlySet<string>;
     reward?: DurableQuestReward;
     decide: QuestTransitionDecider;
     now: Date;
@@ -461,7 +484,23 @@ export class DurableStateRepository {
 
       const result = input.decide(
         current,
-        { objective: input.objective },
+        {
+          objective: input.objective,
+          ...(input.prerequisiteQuestIds === undefined
+            ? {}
+            : { prerequisiteQuestIds: input.prerequisiteQuestIds }),
+          ...(input.completedPrerequisiteQuestIds === undefined
+            ? {}
+            : {
+                completedPrerequisiteQuestIds:
+                  input.completedPrerequisiteQuestIds,
+              }),
+          ...(input.transition.kind === "complete"
+            ? {
+                completionId: `quest-completion:${input.characterId}:${input.questId}`,
+              }
+            : {}),
+        },
         input.transition,
       );
       if (!result.applied) return result;
@@ -497,12 +536,16 @@ export class DurableStateRepository {
         return result;
       }
 
+      const objectiveEventId =
+        "event" in input.transition
+          ? input.transition.event.eventId
+          : input.transition.eventId;
       const event = await tx
         .insert(questObjectiveEvents)
         .values({
           characterId: input.characterId,
           questId: input.questId,
-          eventId: input.transition.eventId,
+          eventId: objectiveEventId,
           createdAt: input.now,
         })
         .onConflictDoNothing()

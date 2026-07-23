@@ -6,6 +6,7 @@ import type {
 import type { QuestPersistence, QuestReward } from "../quests/persistence.js";
 import {
   transitionQuest,
+  type QuestTransitionContext,
   type QuestObjective,
   type QuestSnapshot,
   type QuestTransition,
@@ -34,6 +35,8 @@ export class PostgresQuestPersistence implements QuestPersistence {
     questId: string;
     objective: QuestObjective;
     transition: QuestTransition;
+    prerequisiteQuestIds?: readonly string[];
+    completedPrerequisiteQuestIds?: ReadonlySet<string>;
     reward?: QuestReward;
   }) {
     return this.repository.transitionQuest({
@@ -43,7 +46,34 @@ export class PostgresQuestPersistence implements QuestPersistence {
         targetId: input.objective.targetId,
         requiredCount: input.objective.requiredCount,
       },
-      decide: transitionQuest,
+      ...(input.prerequisiteQuestIds === undefined
+        ? {}
+        : { prerequisiteQuestIds: input.prerequisiteQuestIds }),
+      ...(input.completedPrerequisiteQuestIds === undefined
+        ? {}
+        : {
+            completedPrerequisiteQuestIds: input.completedPrerequisiteQuestIds,
+          }),
+      decide: (snapshot, context, transition) =>
+        transitionQuest(
+          snapshot,
+          {
+            objective: context.objective as QuestObjective,
+            ...(context.prerequisiteQuestIds === undefined
+              ? {}
+              : { prerequisiteQuestIds: context.prerequisiteQuestIds }),
+            ...(context.completedPrerequisiteQuestIds === undefined
+              ? {}
+              : {
+                  completedPrerequisiteQuestIds:
+                    context.completedPrerequisiteQuestIds,
+                }),
+            ...(context.completionId === undefined
+              ? {}
+              : { completionId: context.completionId }),
+          } satisfies QuestTransitionContext,
+          transition as QuestTransition,
+        ),
       now: new Date(this.now()),
     });
   }

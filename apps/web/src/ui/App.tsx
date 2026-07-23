@@ -242,6 +242,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
           initialMap,
           setSnapshot,
         );
+        renderer.current.setQuestGuidanceEnabled(guidanceEnabled);
       })
       .catch(() => {
         if (active)
@@ -304,6 +305,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
         mapArtifactFor(admittedMapId),
         setSnapshot,
       );
+      renderer.current.setQuestGuidanceEnabled(guidanceEnabled);
     } catch {
       setConnectionError("Could not enter the village.");
     } finally {
@@ -344,6 +346,10 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   useEffect(() => {
     if (!combatSnapshot.dialogueNode) renderer.current?.focus();
   }, [combatSnapshot.dialogueNode]);
+
+  useEffect(() => {
+    renderer.current?.setQuestGuidanceEnabled(guidanceEnabled);
+  }, [guidanceEnabled]);
 
   useEffect(() => {
     if (!combatSnapshot.chatEnabled) return;
@@ -395,6 +401,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
         mapArtifactFor(destinationMapId),
         setSnapshot,
       );
+      renderer.current.setQuestGuidanceEnabled(guidanceEnabled);
     });
     return () => {
       cancelled = true;
@@ -560,9 +567,18 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
             {guidanceEnabled &&
             (combatSnapshot.questState.status === "active" ||
               combatSnapshot.questState.status === "ready") ? (
-              <p className="quest-guidance" role="status">
-                Guidance: {combatSnapshot.questState.guidance.label}
-              </p>
+              <>
+                {combatSnapshot.questState.guidance ? (
+                  <p className="quest-guidance" role="status">
+                    Guidance: {combatSnapshot.questState.guidance.label}
+                  </p>
+                ) : null}
+                {combatSnapshot.questState.markers?.map((marker) => (
+                  <p className="quest-guidance" role="status" key={marker.id}>
+                    Marker: {marker.label}
+                  </p>
+                ))}
+              </>
             ) : null}
             {combatSnapshot.questError ? (
               <p role="alert">{combatSnapshot.questError}</p>

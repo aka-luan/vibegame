@@ -199,6 +199,56 @@ export const contentSchema = z
             message: `Missing quest objective reference: ${quest.serverOnly.objective.targetId}`,
           });
         }
+        quest.serverOnly.prerequisites.forEach(
+          (prerequisiteId, prerequisiteIndex) => {
+            if (!identifiers.has(prerequisiteId)) {
+              context.addIssue({
+                code: "custom",
+                path: [
+                  "quests",
+                  "quests",
+                  questIndex,
+                  "serverOnly",
+                  "prerequisites",
+                  prerequisiteIndex,
+                ],
+                message: `Missing quest prerequisite reference: ${prerequisiteId}`,
+              });
+            }
+          },
+        );
+        const guidance = quest.clientVisible.guidance;
+        if (guidance && !identifiers.has(guidance.targetId)) {
+          context.addIssue({
+            code: "custom",
+            path: [
+              "quests",
+              "quests",
+              questIndex,
+              "clientVisible",
+              "guidance",
+              "targetId",
+            ],
+            message: `Missing quest guidance reference: ${guidance.targetId}`,
+          });
+        }
+        quest.clientVisible.markers?.forEach((marker, markerIndex) => {
+          if (!identifiers.has(marker.targetId)) {
+            context.addIssue({
+              code: "custom",
+              path: [
+                "quests",
+                "quests",
+                questIndex,
+                "clientVisible",
+                "markers",
+                markerIndex,
+                "targetId",
+              ],
+              message: `Missing quest marker reference: ${marker.targetId}`,
+            });
+          }
+        });
         if (!identifiers.has(quest.serverOnly.reward.itemId)) {
           context.addIssue({
             code: "custom",

@@ -37,6 +37,7 @@ export interface WorldSnapshot {
 export interface WorldRenderer {
   destroy(): void;
   focus(): void;
+  setQuestGuidanceEnabled(enabled: boolean): void;
 }
 
 interface VillageSceneOptions {
@@ -74,6 +75,7 @@ class VillageScene extends Phaser.Scene {
   #telegraphEndMs = 0;
   #movement?: MovementSynchronizer;
   #latestPresence?: VillagePresenceSnapshot;
+  #guidanceEnabled = true;
   #predictionError = 0;
   #lastSnapshot = "";
 
@@ -449,7 +451,7 @@ class VillageScene extends Phaser.Scene {
     const nearHint =
       hint !== undefined &&
       Math.hypot(local.x - hint.x, local.y - hint.y) <= 46;
-    this.#indicator?.setVisible(nearHint);
+    this.#indicator?.setVisible(nearHint && this.#guidanceEnabled);
     const snapshot: WorldSnapshot = {
       x: local.x,
       y: local.y,
@@ -481,6 +483,16 @@ class VillageScene extends Phaser.Scene {
     this.#telegraph?.destroy(true);
     this.#telegraph = undefined;
     this.#characters.clear();
+  }
+
+  setQuestGuidanceEnabled(enabled: boolean): void {
+    this.#guidanceEnabled = enabled;
+    const local = this.#latestPresence?.players.find(
+      (player) => player.entityId === this.#latestPresence?.localEntityId,
+    );
+    if (local) {
+      this.#publishSnapshot(local, this.#latestPresence?.players.length ?? 0);
+    }
   }
 }
 
@@ -526,6 +538,9 @@ export function createWorldRenderer(
     },
     focus() {
       movementInput?.focus();
+    },
+    setQuestGuidanceEnabled(enabled) {
+      scene.setQuestGuidanceEnabled(enabled);
     },
   };
 }

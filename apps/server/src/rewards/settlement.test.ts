@@ -180,6 +180,11 @@ describe("reward settlement", () => {
     expect(run()).toEqual(run());
     expect(run()).toMatchObject({
       objectiveEventId: "quest-event:room:1:monster:mossback:1:2",
+      objectiveEvent: {
+        eventId: "quest-event:room:1:monster:mossback:1:2",
+        kind: "kill",
+        targetId: monster.id,
+      },
       reward: {
         grantId: "reward:room:1:monster:mossback:1:2:character:a",
       },

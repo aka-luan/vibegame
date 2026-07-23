@@ -33,6 +33,8 @@ export const ERROR_CODES = {
   questNotFound: "QUEST_NOT_FOUND",
   questTransitionInvalid: "QUEST_TRANSITION_INVALID",
   questObjectiveInvalid: "QUEST_OBJECTIVE_INVALID",
+  questObjectiveEventInvalid: "QUEST_OBJECTIVE_EVENT_INVALID",
+  questPrerequisitesUnmet: "QUEST_PREREQUISITES_UNMET",
   questPersistenceUnavailable: "QUEST_PERSISTENCE_UNAVAILABLE",
   invalidEquipmentIntention: "INVALID_EQUIPMENT_INTENTION",
   equipmentItemNotFound: "EQUIPMENT_ITEM_NOT_FOUND",
@@ -354,15 +356,20 @@ export interface DialogueNodeMessage {
 }
 
 export type QuestStatus = "available" | "active" | "ready" | "completed";
+export type QuestObjectiveKind =
+  "kill" | "speak" | "visit" | "interact" | "collect";
 
 export interface QuestStateMessage {
   questId: string;
   status: QuestStatus;
   progress: number;
   requiredCount: number;
+  revision: number;
+  objectiveKind: QuestObjectiveKind;
   title: string;
   description: string;
-  guidance: { label: string; targetId: string };
+  guidance?: { label: string; targetId: string };
+  markers?: { id: string; label: string; targetId: string }[];
 }
 
 export interface QuestRewardMessage {

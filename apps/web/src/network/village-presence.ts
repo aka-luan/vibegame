@@ -139,11 +139,26 @@ const questStateSchema = z
     status: z.enum(["available", "active", "ready", "completed"]),
     progress: z.number().int().nonnegative(),
     requiredCount: z.number().int().positive(),
+    revision: z.number().int().nonnegative(),
+    objectiveKind: z.enum(["kill", "speak", "visit", "interact", "collect"]),
     title: z.string().min(1),
     description: z.string().min(1),
     guidance: z
       .object({ label: z.string().min(1), targetId: z.string().min(1) })
-      .strict(),
+      .strict()
+      .optional(),
+    markers: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            label: z.string().min(1),
+            targetId: z.string().min(1),
+          })
+          .strict(),
+      )
+      .max(8)
+      .optional(),
   })
   .strict();
 const questRewardSchema = z
@@ -459,6 +474,7 @@ async function connectVillage(
   let dialogueNode: DialogueNodeMessage | undefined;
   let dialogueError: ErrorCode | undefined;
   let questState: QuestStateMessage | undefined;
+  const questRevisions = new Map<string, number>();
   let questReward: QuestRewardMessage | undefined;
   let questError: ErrorCode | undefined;
   let equipmentState: EquipmentStateMessage | undefined;
@@ -670,7 +686,25 @@ async function connectVillage(
     room.onMessage<unknown>(SERVER_MESSAGES.questState, (unsafeState) => {
       const state = questStateSchema.safeParse(unsafeState);
       if (!state.success) return;
-      questState = state.data;
+      if (state.data.revision < (questRevisions.get(state.data.questId) ?? -1))
+        return;
+      questRevisions.set(state.data.questId, state.data.revision);
+      questState = {
+        questId: state.data.questId,
+        status: state.data.status,
+        progress: state.data.progress,
+        requiredCount: state.data.requiredCount,
+        revision: state.data.revision,
+        objectiveKind: state.data.objectiveKind,
+        title: state.data.title,
+        description: state.data.description,
+        ...(state.data.guidance === undefined
+          ? {}
+          : { guidance: state.data.guidance }),
+        ...(state.data.markers === undefined
+          ? {}
+          : { markers: state.data.markers }),
+      };
       questError = undefined;
       publish(room.state);
     });
@@ -776,6 +810,7 @@ async function connectVillage(
     dialogueNode = undefined;
     dialogueError = undefined;
     questState = undefined;
+    questRevisions.clear();
     questReward = undefined;
     questError = undefined;
     chatEnabled = false;

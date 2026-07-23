@@ -7,6 +7,7 @@ import {
   type ParticipationCandidate,
 } from "./participation.js";
 import type { RewardGrant } from "./persistence.js";
+import type { ObjectiveEvent } from "../quests/state.js";
 
 const DEFAULT_WINDOW_OPTIONS = {
   proximityRadius: 180,
@@ -30,6 +31,7 @@ export interface CharacterRewardSettlement {
   characterId: string;
   recipientSessionId: string;
   objectiveEventId: string;
+  objectiveEvent: ObjectiveEvent;
   reward: RewardGrant | undefined;
 }
 
@@ -109,6 +111,11 @@ export function settleDefeat(input: {
       definition.monsterId === input.defeatedMonster.sourceMonsterId,
   );
   const objectiveEventId = `quest-event:${input.roomInstanceId}:${input.defeatedMonster.entityId}:${String(input.defeatSequence)}`;
+  const objectiveEvent: ObjectiveEvent = {
+    eventId: objectiveEventId,
+    kind: "kill",
+    targetId: input.defeatedMonster.sourceMonsterId,
+  };
 
   return {
     grants: eligibleCharacters.map((characterId) => {
@@ -119,6 +126,7 @@ export function settleDefeat(input: {
         characterId,
         recipientSessionId,
         objectiveEventId,
+        objectiveEvent,
         reward: loot
           ? {
               grantId: rewardGrantId(
