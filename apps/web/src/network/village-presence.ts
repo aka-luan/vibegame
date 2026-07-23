@@ -26,6 +26,7 @@ import {
   type PartyStateMessage,
   type QuestRewardMessage,
   type QuestStateMessage,
+  type MapOverviewMessage,
 } from "@gameish/protocol";
 import { ServerTimeEstimator } from "./movement-synchronizer.js";
 import {
@@ -273,6 +274,42 @@ const partyResultSchema = z.discriminatedUnion("accepted", [
     })
     .strict(),
 ]);
+const mapOverviewSchema = z
+  .object({
+    locations: z.array(
+      z
+        .object({
+          logicalMapId: z.string().min(1).max(80),
+          displayName: z.string().min(1).max(80),
+          accessible: z.boolean(),
+          discovered: z.boolean(),
+        })
+        .strict(),
+    ),
+    connections: z.array(
+      z
+        .object({
+          fromMapId: z.string().min(1).max(80),
+          toMapId: z.string().min(1).max(80),
+          label: z.string().min(1).max(120),
+        })
+        .strict(),
+    ),
+    recommendations: z.array(
+      z
+        .object({
+          logicalMapId: z.string().min(1).max(80),
+          displayName: z.string().min(1).max(80),
+          reason: z.enum(["quest", "unexplored"]),
+        })
+        .strict(),
+    ),
+    guidance: z
+      .object({ label: z.string().min(1).max(120) })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
 /**
  * Every room a client can join publishes at least this shape.
@@ -344,6 +381,7 @@ export interface VillagePresenceSnapshot {
   partyState: PartyStateMessage;
   partyInvitation: PartyInvitationMessage | undefined;
   partyResult: PartyResultMessage | undefined;
+  mapOverview: MapOverviewMessage | undefined;
 }
 
 export interface VillagePresence {
@@ -369,6 +407,7 @@ export interface VillagePresence {
   leaveParty(): void;
   changePartyLeader(targetEntityId: string): void;
   travelToPartyMember(targetEntityId: string): void;
+  requestMapOverview(): void;
   setSimulatedLatency(latencyMs: number): void;
   subscribe(listener: (snapshot: VillagePresenceSnapshot) => void): () => void;
   close(): Promise<void>;
@@ -536,6 +575,7 @@ async function connectVillage(
   let partyInvitation: PartyInvitationMessage | undefined;
   let pendingInvitationActionId: string | undefined;
   let partyResult: PartyResultMessage | undefined;
+  let mapOverview: MapOverviewMessage | undefined;
   const serverClock = new ServerTimeEstimator();
 
   const afterNetworkDelay = (callback: () => void) => {
@@ -624,6 +664,7 @@ async function connectVillage(
       partyState,
       partyInvitation,
       partyResult,
+      mapOverview,
     };
     afterNetworkDelay(() => {
       // Transitions add and remove subscribers while snapshots are in
@@ -859,7 +900,21 @@ async function connectVillage(
       if (!result.data.accepted) transitionStatus = "idle";
       publish(room.state);
     });
+    room.onMessage<unknown>(SERVER_MESSAGES.mapOverview, (unsafeMessage) => {
+      const overview = mapOverviewSchema.safeParse(unsafeMessage);
+      if (!overview.success) return;
+      mapOverview = {
+        locations: overview.data.locations,
+        connections: overview.data.connections,
+        recommendations: overview.data.recommendations,
+        ...(overview.data.guidance === undefined
+          ? {}
+          : { guidance: overview.data.guidance }),
+      };
+      publish(room.state);
+    });
     room.send(CLIENT_MESSAGES.partyStateRequest);
+    room.send(CLIENT_MESSAGES.mapOverviewRequest);
     // Only the village room implements quests and equipment (forest is
     // traversable-only per issue #13's non-goals); sending these on the
     // forest room would hit an unregistered message handler server-side and
@@ -896,6 +951,7 @@ async function connectVillage(
     chatEnabled = false;
     chatMessages = [];
     chatError = undefined;
+    mapOverview = undefined;
   }
 
   async function leaveCurrentRoomQuietly(): Promise<void> {
@@ -1120,6 +1176,9 @@ async function connectVillage(
         actionId: crypto.randomUUID(),
         targetEntityId,
       });
+    },
+    requestMapOverview() {
+      afterNetworkDelay(() => room.send(CLIENT_MESSAGES.mapOverviewRequest));
     },
     setSimulatedLatency(latencyMs) {
       simulatedLatencyMs = Math.max(0, Math.min(500, latencyMs));

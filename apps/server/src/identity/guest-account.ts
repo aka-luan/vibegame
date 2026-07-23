@@ -7,6 +7,7 @@ import type {
   CharacterCreationInput,
   GuestSessionRecord,
 } from "@gameish/database";
+import { ERROR_CODES } from "@gameish/protocol";
 
 import { hashSecret } from "./play-tickets.js";
 
@@ -83,7 +84,24 @@ export interface SessionContext {
 export interface AccountServiceOptions {
   now?: () => number;
   randomBytes?: (size: number) => Buffer;
+  resolveTicketDestination?: TicketDestinationResolver;
+  recordTicketDestinationFallback?: (details: {
+    code: typeof ERROR_CODES.logicalLocationFallback;
+    actionId: string;
+    requestedMapId: string;
+    fallbackMapId: string;
+  }) => void;
 }
+
+export interface TicketDestinationResolution {
+  logicalMapId: string;
+  entranceId: string;
+  fellBack: boolean;
+}
+
+export type TicketDestinationResolver = (
+  logicalMapId: string,
+) => TicketDestinationResolution;
 
 const CONTENT_VERSION_BY_MAP_ID: Readonly<Record<string, string>> = {
   [villageSlice.mapId]: villageSlice.contentVersion,
@@ -92,6 +110,28 @@ const CONTENT_VERSION_BY_MAP_ID: Readonly<Record<string, string>> = {
 
 function contentVersionForMap(mapId: string): string | undefined {
   return CONTENT_VERSION_BY_MAP_ID[mapId];
+}
+
+function defaultTicketDestination(mapId: string): TicketDestinationResolution {
+  if (mapId === villageSlice.mapId) {
+    return {
+      logicalMapId: villageSlice.mapId,
+      entranceId: villageSlice.entranceId,
+      fellBack: false,
+    };
+  }
+  if (mapId === forestSlice.mapId) {
+    return {
+      logicalMapId: forestSlice.mapId,
+      entranceId: forestSlice.entranceId,
+      fellBack: false,
+    };
+  }
+  return {
+    logicalMapId: villageSlice.mapId,
+    entranceId: villageSlice.entranceId,
+    fellBack: true,
+  };
 }
 
 function makeCookie(secret: string): string {
@@ -126,6 +166,9 @@ export class GuestAccountService {
   readonly #repository: AccountRepository;
   readonly #now: () => number;
   readonly #randomBytes: (size: number) => Buffer;
+  #resolveTicketDestination: TicketDestinationResolver;
+  #recordTicketDestinationFallback:
+    AccountServiceOptions["recordTicketDestinationFallback"] | undefined;
 
   constructor(
     repository: AccountRepository,
@@ -134,6 +177,18 @@ export class GuestAccountService {
     this.#repository = repository;
     this.#now = options.now ?? Date.now;
     this.#randomBytes = options.randomBytes ?? randomBytes;
+    this.#resolveTicketDestination =
+      options.resolveTicketDestination ?? defaultTicketDestination;
+    this.#recordTicketDestinationFallback =
+      options.recordTicketDestinationFallback;
+  }
+
+  configureTicketDestinationPolicy(
+    resolveTicketDestination: TicketDestinationResolver,
+    recordFallback?: AccountServiceOptions["recordTicketDestinationFallback"],
+  ): void {
+    this.#resolveTicketDestination = resolveTicketDestination;
+    this.#recordTicketDestinationFallback = recordFallback;
   }
 
   async ensureSession(cookie: string | undefined): Promise<SessionContext> {
@@ -261,10 +316,22 @@ export class GuestAccountService {
       (candidate) => candidate.id === selectedCharacterId,
     );
     if (!character) return undefined;
-    // The ticket is bound to the character's checkpointed logical map, so it
-    // must carry that map's own content version rather than the village's.
-    const contentVersion = contentVersionForMap(character.logicalMapId);
+    const destination = this.#resolveTicketDestination(character.logicalMapId);
+    if (destination.fellBack) {
+      this.#recordTicketDestinationFallback?.({
+        code: ERROR_CODES.logicalLocationFallback,
+        actionId: randomUUID(),
+        requestedMapId: character.logicalMapId,
+        fallbackMapId: destination.logicalMapId,
+      });
+    }
+    // The ticket is bound to the resolved logical map, so it must carry that
+    // map's own content version rather than the village's.
+    const contentVersion = contentVersionForMap(destination.logicalMapId);
     if (!contentVersion) return undefined;
+    const entranceId = destination.fellBack
+      ? destination.entranceId
+      : character.entranceId;
     const ticket = this.#randomBytes(32).toString("base64url");
     const nowMs = this.#now();
     const expiresAt = nowMs + PLAY_TICKET_TTL_MS;
@@ -272,8 +339,8 @@ export class GuestAccountService {
       tokenHash: hashSecret(ticket),
       userId: session.userId,
       characterId: selectedCharacterId,
-      logicalDestination: character.logicalMapId,
-      entranceId: character.entranceId,
+      logicalDestination: destination.logicalMapId,
+      entranceId,
       contentVersion,
       nonce: randomUUID(),
       now: new Date(nowMs),
@@ -283,7 +350,7 @@ export class GuestAccountService {
     // bound to wherever the character was last checkpointed, which after a
     // completed transition is the forest, not the village.
     return created
-      ? { ticket, expiresAt, mapId: character.logicalMapId }
+      ? { ticket, expiresAt, mapId: destination.logicalMapId }
       : undefined;
   }
 

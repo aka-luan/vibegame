@@ -19,6 +19,7 @@ import {
   type TransitionRejectedMessage,
   type TransitionTicketMessage,
   type PartyResultMessage,
+  type MapOverviewMessage,
 } from "@gameish/protocol";
 import { PLAYER_MOVEMENT } from "@gameish/world";
 import { z } from "zod";
@@ -41,6 +42,8 @@ import {
   type MapRoomMetadata,
 } from "./placement.js";
 import { resolveSpawnPosition } from "./spawn-resolution.js";
+import { LOGICAL_MAP_OVERVIEW_MAPS, LOGICAL_MAPS } from "./logical-maps.js";
+import { buildMapOverview } from "./map-overview.js";
 import type { QuestPersistence } from "../quests/persistence.js";
 import { PartyCoordinator } from "../party/coordinator.js";
 import { registerPartyRoomHandlers } from "../party/room-handlers.js";
@@ -144,6 +147,9 @@ export function createForestRoom(
     hardCapacity?: number;
     checkpointLocation?:
       ((input: LocationCheckpointInput) => Promise<boolean>) | undefined;
+    recordArrival?:
+      | ((characterId: string, logicalMapId: string) => Promise<void>)
+      | undefined;
     checkpointTimeoutMs?: number;
     recordCheckpointTimeout?: (details: {
       logicalMapId: string;
@@ -205,6 +211,7 @@ export function createForestRoom(
       Math.max(1, this.#reconnectGraceSeconds * 1_000),
     );
     readonly #checkpointLocation = options.checkpointLocation;
+    readonly #recordArrival = options.recordArrival;
     readonly #questPersistence = options.questPersistence;
     readonly #mapChatEnabled = options.mapChatEnabled ?? false;
     readonly #mapChatRateLimiter =
@@ -216,6 +223,7 @@ export function createForestRoom(
     readonly #sessionEntranceId = new Map<string, string>();
     readonly #lastCheckpointAtMs = new Map<string, number>();
     readonly #disconnectedSessions = new Set<string>();
+    readonly #discoveredMapIds = new Map<string, Set<string>>();
     readonly #partyDepartures = new Set<string>();
     readonly #portalTransitions = new PortalTransitionCoordinator({
       sourceMap: forestMap,
@@ -324,6 +332,9 @@ export function createForestRoom(
       );
       this.onMessage(CLIENT_MESSAGES.questStateRequest, (client) => {
         void this.#sendVisitQuestState(client);
+      });
+      this.onMessage(CLIENT_MESSAGES.mapOverviewRequest, (client) => {
+        void this.#sendMapOverview(client);
       });
       registerPartyRoomHandlers({
         room: this,
@@ -638,6 +649,7 @@ export function createForestRoom(
       this.#playerIdentity.delete(sessionId);
       this.#lastCheckpointAtMs.delete(sessionId);
       this.#disconnectedSessions.delete(sessionId);
+      this.#discoveredMapIds.delete(sessionId);
       this.#sessionEntranceId.delete(sessionId);
       this.#portalTransitions.clearSession(sessionId);
       this.state.players.delete(sessionId);
@@ -709,6 +721,24 @@ export function createForestRoom(
         characterId: consumption.admission.characterId,
         partyId: consumption.admission.partyId,
       });
+      const discoveredMapIds = new Set(
+        consumption.admission.characterState?.discoveries ?? [],
+      );
+      discoveredMapIds.add(forestSlice.mapId);
+      this.#discoveredMapIds.set(client.sessionId, discoveredMapIds);
+      if (
+        this.#recordArrival &&
+        !consumption.admission.characterId.startsWith("development:")
+      ) {
+        try {
+          await this.#recordArrival(
+            consumption.admission.characterId,
+            forestSlice.mapId,
+          );
+        } catch {
+          throw new ServerError(4_229, ERROR_CODES.databaseUnavailable);
+        }
+      }
       void this.#applyVisitObjective(client);
       parties.registerPresence({
         memberId: consumption.admission.characterId,
@@ -723,6 +753,7 @@ export function createForestRoom(
       this.#lastProcessedSequences.set(client.sessionId, 0);
       this.#intentionViolations.set(client.sessionId, 0);
       void this.#checkpoint(client.sessionId, "online");
+      void this.#sendMapOverview(client);
       client.send(SERVER_MESSAGES.chatAvailability, {
         enabled: this.#mapChatEnabled,
       });
@@ -844,6 +875,43 @@ export function createForestRoom(
           ? {}
           : { markers: definition.clientVisible.markers }),
       };
+    }
+
+    async #sendMapOverview(client: Client): Promise<void> {
+      const identity = this.#playerIdentity.get(client.sessionId);
+      if (!identity) return;
+      const definition = villageQuests.quests.find(
+        (quest) => quest.serverOnly.objective.kind === "visit",
+      );
+      const snapshot =
+        this.#questPersistence && definition
+          ? await this.#questPersistence.loadQuest(
+              identity.characterId,
+              definition.id,
+            )
+          : undefined;
+      const questGuidance =
+        definition &&
+        snapshot?.status === "active" &&
+        definition.clientVisible.guidance
+          ? {
+              logicalMapId: definition.clientVisible.guidance.targetId,
+              label: definition.clientVisible.guidance.label,
+            }
+          : undefined;
+      client.send(
+        SERVER_MESSAGES.mapOverview,
+        buildMapOverview({
+          logicalMaps: LOGICAL_MAP_OVERVIEW_MAPS,
+          isAccessible: (logicalMapId) =>
+            options.canAccessMap?.(identity.characterId, logicalMapId) ??
+            Boolean(LOGICAL_MAPS[logicalMapId]),
+          discoveredMapIds:
+            this.#discoveredMapIds.get(client.sessionId) ?? new Set(),
+          currentMapId: forestSlice.mapId,
+          ...(questGuidance === undefined ? {} : { questGuidance }),
+        }) satisfies MapOverviewMessage,
+      );
     }
 
     #simulateFixedStep() {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import forestMap from "@gameish/content/forest-map";
+import { LOGICAL_MAP_DIRECTORY } from "@gameish/content";
 import villageCombat from "@gameish/content/village-combat";
 import villageEquipment from "@gameish/content/village-equipment";
 import villageMap from "@gameish/content/village-map";
@@ -17,6 +18,7 @@ import {
   type WorldSnapshot,
 } from "../world/create-world-renderer.js";
 import { DialogueDialog } from "./DialogueDialog.js";
+import { MapPanel } from "./MapPanel.js";
 
 /**
  * The client-safe map artifact for every logical map the world renderer can
@@ -60,6 +62,7 @@ type CombatSnapshot = Pick<
   | "partyState"
   | "partyInvitation"
   | "partyResult"
+  | "mapOverview"
 >;
 
 function pickCombatSnapshot(
@@ -92,6 +95,7 @@ function pickCombatSnapshot(
     partyState: presenceSnapshot.partyState,
     partyInvitation: presenceSnapshot.partyInvitation,
     partyResult: presenceSnapshot.partyResult,
+    mapOverview: presenceSnapshot.mapOverview,
   };
 }
 
@@ -182,6 +186,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   );
   const [clockMs, setClockMs] = useState(() => Date.now());
   const [dialogueTextScale, setDialogueTextScale] = useState(1);
+  const [mapOpen, setMapOpen] = useState(false);
   const [guidanceEnabled, setGuidanceEnabled] = useState(true);
   const [chatText, setChatText] = useState("");
   const [combatSnapshot, setCombatSnapshot] = useState<CombatSnapshot>({
@@ -211,6 +216,7 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     partyState: { members: [] },
     partyInvitation: undefined,
     partyResult: undefined,
+    mapOverview: undefined,
   });
   const renderedMapId = useRef<string | null>(null);
 
@@ -388,6 +394,27 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     return () => window.removeEventListener("keydown", focusChat);
   }, [combatSnapshot.chatEnabled, combatSnapshot.dialogueNode]);
 
+  useEffect(() => {
+    const openMap = (event: KeyboardEvent) => {
+      if (!joined || mapOpen || event.key.toLowerCase() !== "m") return;
+      if (combatSnapshot.dialogueNode) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          ["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA"].includes(
+            target.tagName,
+          ))
+      ) {
+        return;
+      }
+      event.preventDefault();
+      setMapOpen(true);
+    };
+    window.addEventListener("keydown", openMap);
+    return () => window.removeEventListener("keydown", openMap);
+  }, [combatSnapshot.dialogueNode, joined, mapOpen]);
+
   // React owns swapping the rendered map artifact whenever the presence
   // snapshot reports a new logical map (i.e. after a portal transition
   // completes); Phaser only owns the canvas underneath it. The world
@@ -460,6 +487,14 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
   const canInviteToParty =
     combatSnapshot.partyState.members.length === 0 ||
     localPartyMember?.leader === true;
+  const currentMapName =
+    combatSnapshot.mapOverview?.locations.find(
+      (location) => location.logicalMapId === combatSnapshot.currentMapId,
+    )?.displayName ??
+    LOGICAL_MAP_DIRECTORY.find(
+      (entry) => entry.logicalMapId === combatSnapshot.currentMapId,
+    )?.displayName ??
+    "Current area";
 
   if (!useDevelopmentLogin && accountReady && !joined) {
     return (
@@ -518,8 +553,13 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
     <aside className="world-panel" aria-labelledby="world-heading">
       <p className="eyebrow">Authoritative multiplayer village</p>
       <h1 id="world-heading">Village presence test</h1>
-      <p className="control-hint">Move with WASD or arrow keys.</p>
+      <p className="control-hint">
+        Move with WASD or arrow keys. Press M for the map.
+      </p>
       {connectionError ? <p role="alert">{connectionError}</p> : null}
+      <button type="button" onClick={() => setMapOpen(true)}>
+        Map (M)
+      </button>
       <p className="world-status" aria-live="polite">
         {snapshot.publicPlayerCount} players connected. Facing {snapshot.facing}
         ; {snapshot.state}. Network {snapshot.connectionStatus}.
@@ -980,6 +1020,15 @@ export function App({ worldRoot }: { worldRoot: HTMLElement }) {
           onClose={() => {
             presence.current?.closeDialogue();
           }}
+        />
+      ) : null}
+      {mapOpen ? (
+        <MapPanel
+          currentMap={mapArtifactFor(combatSnapshot.currentMapId)}
+          currentMapName={currentMapName}
+          overview={combatSnapshot.mapOverview}
+          localPosition={{ x: snapshot.x, y: snapshot.y }}
+          onClose={() => setMapOpen(false)}
         />
       ) : null}
     </aside>

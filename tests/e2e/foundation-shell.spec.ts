@@ -39,3 +39,36 @@ test("loads the production village build and moves by keyboard after focus hando
     .poll(async () => (await canvas.boundingBox())?.width)
     .not.toBe(beforeResize?.width);
 });
+
+test("opens both keyboard-accessible map views with independent text scaling", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  const canvas = page.locator("#world-root canvas");
+  await expect(canvas).toBeVisible();
+  await expect(page.getByRole("button", { name: "Map (M)" })).toBeVisible();
+
+  await canvas.focus();
+  await page.keyboard.press("M");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole("heading", { name: "Local map" }),
+  ).toBeVisible();
+  await expect(dialog.getByText("Village").first()).toBeVisible();
+
+  const scale = dialog.getByLabel("Map text scale");
+  await scale.press("ArrowRight");
+  await expect(scale).toHaveValue("1.05");
+
+  await dialog.getByRole("tab", { name: "World map" }).click();
+  await expect(
+    dialog.getByRole("heading", { name: "World map" }),
+  ).toBeVisible();
+  await expect(dialog.getByText("Forest").first()).toBeVisible();
+  await expect(dialog).not.toContainText("room");
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+});

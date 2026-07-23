@@ -6,6 +6,10 @@ import { equipmentCatalogSchema } from "./equipment.js";
 import { questCatalogSchema } from "./quests.js";
 
 export type { ClientMapArtifact, ServerMapArtifact } from "./maps.js";
+export {
+  LOGICAL_MAP_DIRECTORY,
+  type LogicalMapDirectoryEntry,
+} from "./logical-map-directory.js";
 
 const namespacedId = z
   .string()

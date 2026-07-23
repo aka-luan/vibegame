@@ -286,6 +286,29 @@ describe("durable progress persistence", () => {
     });
   });
 
+  it("bumps the character revision once per discovery and is idempotent on replay", async () => {
+    // Arrival records the logical map id itself as the discovery (see the
+    // room `recordArrival` wiring). Recording must bump the character
+    // revision exactly once and reject a replay without a second bump, so a
+    // returning player's map overview reflects a stable, deduplicated set.
+    const before = await durableState.loadCharacterState(characterId);
+    await expect(
+      durableState.recordDiscovery(characterId, "map:forest", now),
+    ).resolves.toBe(true);
+    const afterFirst = await durableState.loadCharacterState(characterId);
+    expect(afterFirst.characterRevision).toBe(before.characterRevision + 1);
+    expect(afterFirst.discoveries).toContain("map:forest");
+
+    await expect(
+      durableState.recordDiscovery(characterId, "map:forest", now),
+    ).resolves.toBe(false);
+    const afterReplay = await durableState.loadCharacterState(characterId);
+    expect(afterReplay.characterRevision).toBe(afterFirst.characterRevision);
+    expect(
+      afterReplay.discoveries.filter((id) => id === "map:forest"),
+    ).toHaveLength(1);
+  });
+
   it("rejects durable mutations when PostgreSQL is unavailable", async () => {
     const unavailable = connectDatabase(
       "postgres://gameish:gameish@127.0.0.1:1/gameish",

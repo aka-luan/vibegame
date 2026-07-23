@@ -69,6 +69,7 @@ export const ERROR_CODES = {
   partyMemberUnavailable: "PARTY_MEMBER_UNAVAILABLE",
   partyTravelInProgress: "PARTY_TRAVEL_IN_PROGRESS",
   partyAlreadyWithMember: "PARTY_ALREADY_WITH_MEMBER",
+  logicalLocationFallback: "LOGICAL_LOCATION_FALLBACK",
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
@@ -99,6 +100,7 @@ export const CLIENT_MESSAGES = {
   partyChangeLeader: "party_change_leader",
   partyTravelToMember: "party_travel_to_member",
   partyStateRequest: "party_state_request",
+  mapOverviewRequest: "map_overview_request",
 } as const;
 
 export const SERVER_MESSAGES = {
@@ -128,6 +130,7 @@ export const SERVER_MESSAGES = {
   partyInvitation: "party_invitation",
   partyState: "party_state",
   partyResult: "party_result",
+  mapOverview: "map_overview",
 } as const;
 
 export interface PartyInviteIntention {
@@ -164,6 +167,26 @@ export interface PartyMemberState {
 
 export interface PartyStateMessage {
   members: PartyMemberState[];
+}
+
+export interface MapOverviewMessage {
+  locations: {
+    logicalMapId: string;
+    displayName: string;
+    accessible: boolean;
+    discovered: boolean;
+  }[];
+  connections: {
+    fromMapId: string;
+    toMapId: string;
+    label: string;
+  }[];
+  recommendations: {
+    logicalMapId: string;
+    displayName: string;
+    reason: "quest" | "unexplored";
+  }[];
+  guidance?: { label: string };
 }
 
 export interface PartyInvitationMessage {

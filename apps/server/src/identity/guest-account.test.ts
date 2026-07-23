@@ -8,6 +8,7 @@ import type {
 } from "@gameish/database";
 
 import { forestSlice } from "@gameish/content/slices/forest";
+import { villageSlice } from "@gameish/content/slices/village";
 
 import { createHttpApp } from "../http/app.js";
 import {
@@ -24,6 +25,8 @@ class MemoryAccountRepository implements AccountRepository {
     DatabaseCharacter & { userId: string; requestId: string }
   >();
   readonly tickets = new Set<string>();
+  lastTicketInput:
+    Parameters<AccountRepository["issuePlayTicket"]>[0] | undefined;
 
   createGuestSession(input: {
     id: string;
@@ -179,6 +182,7 @@ class MemoryAccountRepository implements AccountRepository {
     now: Date;
     expiresAt: Date;
   }): Promise<boolean> {
+    this.lastTicketInput = input;
     const character = this.characters.get(input.characterId);
     if (!character || character.userId !== input.userId)
       return Promise.resolve(false);
@@ -308,5 +312,61 @@ describe("guest account lifecycle", () => {
 
     const issued = await service.issuePlayTicket(context.session, character.id);
     expect(issued?.mapId).toBe(forestSlice.mapId);
+  });
+
+  it("falls back to the village for an invalid or inaccessible saved location and records a safe diagnostic", async () => {
+    const diagnostics: string[] = [];
+    const repository = new MemoryAccountRepository();
+    const service = new GuestAccountService(repository, {
+      recordTicketDestinationFallback: (details) => {
+        diagnostics.push(details.code);
+      },
+    });
+    const context = await service.ensureSession(undefined);
+    const character = await service.createCharacter(context.session.userId, {
+      name: "Aster",
+      requestId: "create-invalid-location",
+    });
+    const stored = repository.characters.get(character.id)!;
+    stored.logicalMapId = "map:missing";
+    stored.entranceId = "not-a-real-entrance";
+
+    const invalid = await service.issuePlayTicket(
+      context.session,
+      character.id,
+    );
+    expect(invalid?.mapId).toBe(villageSlice.mapId);
+    expect(repository.lastTicketInput?.logicalDestination).toBe(
+      villageSlice.mapId,
+    );
+    expect(repository.lastTicketInput?.entranceId).toBe(
+      villageSlice.entranceId,
+    );
+
+    stored.logicalMapId = forestSlice.mapId;
+    stored.entranceId = forestSlice.entranceId;
+    service.configureTicketDestinationPolicy(
+      (mapId) => ({
+        logicalMapId: mapId === forestSlice.mapId ? villageSlice.mapId : mapId,
+        entranceId:
+          mapId === forestSlice.mapId
+            ? villageSlice.entranceId
+            : villageSlice.entranceId,
+        fellBack: mapId === forestSlice.mapId,
+      }),
+      (details) => {
+        diagnostics.push(details.code);
+      },
+    );
+
+    const inaccessible = await service.issuePlayTicket(
+      context.session,
+      character.id,
+    );
+    expect(inaccessible?.mapId).toBe(villageSlice.mapId);
+    expect(diagnostics).toEqual([
+      "LOGICAL_LOCATION_FALLBACK",
+      "LOGICAL_LOCATION_FALLBACK",
+    ]);
   });
 });
