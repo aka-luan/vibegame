@@ -263,6 +263,27 @@ export const contentSchema = z
             message: `Missing quest reward reference: ${quest.serverOnly.reward.itemId}`,
           });
         }
+        if (
+          quest.serverOnly.objective.kind === "collect" &&
+          !content.combat?.loot.some((loot) =>
+            loot.entries.some(
+              (entry) => entry.id === quest.serverOnly.objective.targetId,
+            ),
+          )
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: [
+              "quests",
+              "quests",
+              questIndex,
+              "serverOnly",
+              "objective",
+              "targetId",
+            ],
+            message: `Impossible collect objective: ${quest.serverOnly.objective.targetId} is not droppable from any loot table`,
+          });
+        }
       });
     }
   });

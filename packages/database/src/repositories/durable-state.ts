@@ -495,11 +495,6 @@ export class DurableStateRepository {
                 completedPrerequisiteQuestIds:
                   input.completedPrerequisiteQuestIds,
               }),
-          ...(input.transition.kind === "complete"
-            ? {
-                completionId: `quest-completion:${input.characterId}:${input.questId}`,
-              }
-            : {}),
         },
         input.transition,
       );

@@ -385,7 +385,6 @@ export function createVillageRoom(
     readonly #disconnectedSessions = new Set<string>();
     readonly #participationWindow = new RewardSettlementWindow();
     #defeatSequence = 0;
-    #questEventSequence = 0;
     #monsterLifecycle!: MonsterLifecycle;
 
     override onCreate() {
@@ -879,14 +878,21 @@ export function createVillageRoom(
           (message) => message.type === "dialogueNode",
         );
         if (dialogueNode?.type === "dialogueNode") {
+          const characterId =
+            this.#playerIdentity.get(client.sessionId)?.characterId ?? "";
           void this.#applyQuestObjectiveProgress(
-            this.#playerIdentity.get(client.sessionId)?.characterId ?? "",
-            this.#objectiveEvent("speak", dialogueNode.payload.npcId),
+            characterId,
+            this.#objectiveEvent(
+              "speak",
+              characterId,
+              dialogueNode.payload.npcId,
+            ),
           );
           void this.#applyQuestObjectiveProgress(
-            this.#playerIdentity.get(client.sessionId)?.characterId ?? "",
+            characterId,
             this.#objectiveEvent(
               "interact",
+              characterId,
               `interactive:${intention.data.interactiveId}`,
             ),
           );
@@ -943,13 +949,16 @@ export function createVillageRoom(
       const decision = session.objectiveProgress(event); if (!decision) return; const client = this.clients.find((candidate) => candidate.sessionId === sessionId); await this.#persistQuestDecision(session, decision, client);
     }
 
+    // Objective Event ids derive from character + kind + target so a re-sent
+    // client intention replays the same event and dedups instead of minting a
+    // fresh id that would advance the objective again.
     #objectiveEvent(
       kind: ObjectiveEvent["kind"],
+      characterId: string,
       targetId: string,
     ): ObjectiveEvent {
-      this.#questEventSequence += 1;
       return {
-        eventId: `quest-event:${this.roomId}:private:${String(this.#questEventSequence)}`,
+        eventId: `quest-event:${kind}:${characterId}:${targetId}`,
         kind,
         targetId,
       };

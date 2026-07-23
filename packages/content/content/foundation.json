@@ -112,11 +112,11 @@
       }
     },
     {
-      "id": "quest:mossback_scales",
+      "id": "quest:trail_gear",
       "tags": ["quest", "forest"],
-      "references": ["item:mossback_scale"],
+      "references": ["item:mossback_scale", "item:trailwarden_tunic"],
       "clientVisible": {
-        "displayName": "Gather Mossback Scales"
+        "displayName": "Recover Trail Gear"
       },
       "serverOnly": {
         "developmentOnly": false
@@ -510,8 +510,8 @@
                 }
               },
               {
-                "id": "accept_mossback_scales",
-                "label": "I will gather mossback scales.",
+                "id": "accept_trail_gear",
+                "label": "I will recover the trail gear.",
                 "nextNodeId": "farewell",
                 "condition": {
                   "kind": "completed_quest",
@@ -519,21 +519,21 @@
                 },
                 "questAction": {
                   "kind": "accept_quest",
-                  "questId": "quest:mossback_scales"
+                  "questId": "quest:trail_gear"
                 }
               },
               {
-                "id": "report_mossback_scales",
-                "label": "I gathered the mossback scales.",
+                "id": "report_trail_gear",
+                "label": "I recovered the trail gear.",
                 "nextNodeId": "farewell",
                 "condition": {
                   "kind": "quest_status",
-                  "questId": "quest:mossback_scales",
+                  "questId": "quest:trail_gear",
                   "status": "ready"
                 },
                 "questAction": {
                   "kind": "complete_quest",
-                  "questId": "quest:mossback_scales"
+                  "questId": "quest:trail_gear"
                 }
               }
             ]
@@ -666,21 +666,21 @@
         }
       },
       {
-        "id": "quest:mossback_scales",
+        "id": "quest:trail_gear",
         "clientVisible": {
-          "title": "Gather Mossback Scales",
-          "description": "Collect scales dropped by mossbacks near the path.",
+          "title": "Recover Trail Gear",
+          "description": "Collect trailwarden tunics recovered from mossbacks near the path.",
           "objectiveKind": "collect",
           "requiredCount": 2,
           "guidance": {
             "label": "Mossback drops",
-            "targetId": "item:mossback_scale"
+            "targetId": "item:trailwarden_tunic"
           }
         },
         "serverOnly": {
           "objective": {
             "kind": "collect",
-            "targetId": "item:mossback_scale",
+            "targetId": "item:trailwarden_tunic",
             "requiredCount": 2
           },
           "prerequisites": ["quest:notice_board_interaction"],

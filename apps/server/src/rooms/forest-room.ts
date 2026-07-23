@@ -186,7 +186,6 @@ export function createForestRoom(
     );
     readonly #checkpointLocation = options.checkpointLocation;
     readonly #questPersistence = options.questPersistence;
-    #questEventSequence = 0;
     readonly #mapChatEnabled = options.mapChatEnabled ?? false;
     readonly #mapChatRateLimiter =
       options.mapChatRateLimiter ?? new MapChatRateLimiter();
@@ -481,7 +480,6 @@ export function createForestRoom(
         definition.id,
       );
       if (snapshot.status !== "active") return;
-      this.#questEventSequence += 1;
       const result = await persistence.transitionQuest({
         characterId: identity.characterId,
         questId: definition.id,
@@ -490,7 +488,9 @@ export function createForestRoom(
         transition: {
           kind: "objective",
           event: {
-            eventId: `quest-event:${this.roomId}:visit:${String(this.#questEventSequence)}`,
+            // Deterministic per character + target: rejoining the forest
+            // replays the same Objective Event id and dedups.
+            eventId: `quest-event:visit:${identity.characterId}:${definition.serverOnly.objective.targetId}`,
             kind: "visit",
             targetId: definition.serverOnly.objective.targetId,
           },

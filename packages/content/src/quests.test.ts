@@ -21,7 +21,7 @@ describe("quest content validation", () => {
     expect(new Set(client.quests.map((quest) => quest.objectiveKind))).toEqual(
       new Set(["kill", "speak", "visit", "interact", "collect"]),
     );
-    expect(JSON.stringify(client.quests[0])).not.toContain("mossback_scale");
+    expect(JSON.stringify(client)).not.toContain("mossback_scale");
     expect(JSON.stringify(client)).not.toContain("currency");
     expect(JSON.stringify(client)).not.toContain("prerequisites");
   });
@@ -69,6 +69,27 @@ describe("quest content validation", () => {
     input.quests[0]!.serverOnly.prerequisites = [input.quests[4]!.id];
     input.quests[4]!.serverOnly.prerequisites = [];
     expect(validateQuestCatalog(input).success).toBe(true);
+  });
+
+  it("rejects a collect objective whose target no loot table drops", () => {
+    const input = structuredClone(foundationContent);
+    const collectQuest = input.quests.quests.find(
+      (candidate) => candidate.serverOnly.objective.kind === "collect",
+    );
+    if (!collectQuest) throw new Error("Missing collect fixture");
+    collectQuest.serverOnly.objective.targetId = "item:mossback_scale";
+    collectQuest.clientVisible.guidance = {
+      label: "Mossback drops",
+      targetId: "item:mossback_scale",
+    };
+    const result = validateContent(input);
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(
+      result.issues.some((issue) =>
+        issue.message.includes("Impossible collect objective"),
+      ),
+    ).toBe(true);
   });
 
   it("rejects missing objective and prerequisite references in canonical content", () => {

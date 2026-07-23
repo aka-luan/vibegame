@@ -5,6 +5,7 @@ import type {
 
 import type { QuestPersistence, QuestReward } from "../quests/persistence.js";
 import {
+  questCompletionId,
   transitionQuest,
   type QuestTransitionContext,
   type QuestObjective,
@@ -68,9 +69,7 @@ export class PostgresQuestPersistence implements QuestPersistence {
                   completedPrerequisiteQuestIds:
                     context.completedPrerequisiteQuestIds,
                 }),
-            ...(context.completionId === undefined
-              ? {}
-              : { completionId: context.completionId }),
+            completionId: questCompletionId(input.characterId, input.questId),
           } satisfies QuestTransitionContext,
           transition as QuestTransition,
         ),
