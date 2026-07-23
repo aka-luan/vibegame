@@ -197,6 +197,17 @@ export class PortalTransitionCoordinator {
       (member) => member.sessionId === input.initiatorSessionId,
     );
     if (!initiator) return { kind: "invalid" };
+    // A repeat request from the initiator while their own transition is
+    // still in flight is the same rapid-retry `evaluate` rejects with the
+    // cooldown code; only another member's in-flight travel is a party
+    // condition.
+    if (this.#inFlight.has(initiator.sessionId)) {
+      return {
+        kind: "rejected",
+        actionId: parsed.data.actionId,
+        code: ERROR_CODES.portalOnCooldown,
+      };
+    }
     if (
       input.members.some(
         (member) =>

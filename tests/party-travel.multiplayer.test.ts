@@ -22,7 +22,10 @@ const joinedRooms: Room[] = [];
 
 afterEach(async () => {
   await Promise.all(
-    joinedRooms.splice(0).map((room) => room.leave().catch(() => undefined)),
+    joinedRooms
+      .splice(0)
+      .filter((room) => room.connection.isOpen)
+      .map((room) => room.leave().catch(() => undefined)),
   );
   await runningServer?.close();
   runningServer = undefined;

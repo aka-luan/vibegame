@@ -509,6 +509,11 @@ export function createForestRoom(
           expiresAtMs: admission.expiresAtMs,
         } satisfies TransitionTicketMessage);
       }
+      // Closing the connection in the same synchronous turn as the ticket
+      // send can drop the still-buffered ticket, leaving that member behind
+      // without feedback — the silent split AC2 forbids. One macrotask lets
+      // the transport flush every ticket before any traveler is detached.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       for (const admission of outcome.admissions) {
         const traveler = this.clients.find(
           (candidate) => candidate.sessionId === admission.sessionId,
@@ -598,6 +603,9 @@ export function createForestRoom(
         destinationMapId: outcome.destinationMapId,
         expiresAtMs: outcome.expiresAtMs,
       } satisfies TransitionTicketMessage);
+      // One macrotask so the buffered ticket flushes before the connection
+      // closes; see the identical wait in the cohesive portal path.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       parties.departForTravel(identity.characterId);
       this.#partyDepartures.add(client.sessionId);
       this.#removeSession(client.sessionId);

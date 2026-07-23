@@ -220,7 +220,15 @@ export class PartyCoordinator {
       return { accepted: false, code: ERROR_CODES.partyMemberUnavailable };
     }
     const party = this.#partyFor(memberId);
-    if (!party) return this.#claimTravel([presence]);
+    if (!party) {
+      const claim = this.#claimTravel([presence]);
+      // A partyless player re-requesting while their own transition is in
+      // flight is the plain rapid retry the portal cooldown already names;
+      // party vocabulary would leak into solo travel feedback otherwise.
+      return !claim.accepted && claim.code === ERROR_CODES.partyTravelInProgress
+        ? { accepted: false, code: ERROR_CODES.portalOnCooldown }
+        : claim;
+    }
     if (party.leaderId !== memberId) {
       return explicitlyAlone
         ? this.#claimTravel([presence])
